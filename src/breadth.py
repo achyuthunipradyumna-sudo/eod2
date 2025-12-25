@@ -10,8 +10,12 @@ OUTPUT_DIR = Path("output")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 DMA_WINDOWS = [20, 50, 200]
-NHNL_LOOKBACK = 252  # ~52 weeks
+NHNL_LOOKBACK = 252          # ~52 weeks
 AD_MA_WINDOWS = [50, 200]
+DAILY_LOOKBACK = 260         # ~1 year
+FULL_HISTORY_FILE = OUTPUT_DIR / "breadth_full_history.csv"
+
+MODE = os.getenv("BREADTH_MODE", "daily").lower()
 
 # ================= HELPERS =================
 def zscore(series, window):
@@ -43,14 +47,13 @@ def load_stock(symbol):
     df = df.sort_values("Date")[["Date", "Close"]]
     df.set_index("Date", inplace=True)
 
-    print(f"[OK] Loaded {symbol} ({len(df)})", flush=True)
     return df
 
 # ================= MAIN =================
 def main():
-    symbols = load_symbols()
-    print(f"[INFO] Symbols to process: {len(symbols)}", flush=True)
+    print(f"[INFO] Breadth mode = {MODE}", flush=True)
 
+    symbols = load_symbols()
     prices = {}
 
     for sym in symbols:
@@ -63,6 +66,10 @@ def main():
 
     # -------- ALIGN DATES --------
     price_df = pd.DataFrame(prices).dropna(how="all")
+
+    if MODE == "daily":
+        price_df = price_df.tail(DAILY_LOOKBACK)
+
     print(f"[INFO] Price matrix shape: {price_df.shape}", flush=True)
 
     # ================= PILLAR 1: ADV / DECL =================
@@ -71,11 +78,15 @@ def main():
     advances = (daily_returns > 0).sum(axis=1)
     declines = (daily_returns < 0).sum(axis=1)
 
-    ad_line = advances - declines
+    ad = advances - declines
+    total = price_df.count(axis=1)
+
     ad_df = pd.DataFrame({
         "advances": advances,
         "declines": declines,
-        "ad": ad_line
+        "ad": ad,
+        "ad_cum": ad.cumsum(),
+        "ad_participation_pct": (advances + declines) / total * 100
     })
 
     for w in AD_MA_WINDOWS:
@@ -85,14 +96,22 @@ def main():
     ad_df["ad_percentile"] = percentile(ad_df["ad"])
 
     # ================= PILLAR 2: DMA BREADTH =================
-    dma_breadth = {}
+    dma_frames = []
 
     for w in DMA_WINDOWS:
         dma = price_df.rolling(w).mean()
         above = (price_df > dma).sum(axis=1)
-        dma_breadth[f"pct_above_{w}dma"] = above / price_df.count(axis=1) * 100
+        pct = above / price_df.count(axis=1) * 100
 
-    dma_df = pd.DataFrame(dma_breadth)
+        df = pd.DataFrame({
+            f"pct_above_{w}dma": pct,
+            f"pct_above_{w}dma_z": zscore(pct, 200),
+            f"pct_above_{w}dma_pctile": percentile(pct),
+            f"pct_above_{w}dma_mom": pct.diff(20)
+        })
+        dma_frames.append(df)
+
+    dma_df = pd.concat(dma_frames, axis=1)
 
     # ================= PILLAR 3: NEW HIGHS / LOWS =================
     highs = price_df.rolling(NHNL_LOOKBACK).max()
@@ -103,18 +122,25 @@ def main():
 
     nhnl_df = pd.DataFrame({
         "new_highs": nh,
-        "new_lows": nl
+        "new_lows": nl,
+        "nhnl_diff": nh - nl,
+        "nhnl_ratio": nh / (nh + nl).replace(0, np.nan)
     })
 
-    # ================= MERGE ALL =================
+    # ================= MERGE =================
     breadth = pd.concat([ad_df, dma_df, nhnl_df], axis=1).dropna()
 
     # ================= SAVE =================
     today = datetime.utcnow().strftime("%Y-%m-%d")
-    out_file = OUTPUT_DIR / f"breadth_{today}.csv"
-    breadth.to_csv(out_file)
 
-    print(f"[SUCCESS] Breadth saved → {out_file}", flush=True)
+    if MODE == "full":
+        breadth.to_csv(FULL_HISTORY_FILE)
+        print(f"[SUCCESS] Full history updated → {FULL_HISTORY_FILE}", flush=True)
+    else:
+        out_file = OUTPUT_DIR / "breadth_latest.csv"
+        breadth.tail(1).to_csv(out_file)
+        print(f"[SUCCESS] Daily breadth saved → {out_file}", flush=True)
+
     print(breadth.tail(3), flush=True)
 
 if __name__ == "__main__":
