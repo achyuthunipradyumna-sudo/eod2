@@ -31,4 +31,4 @@ jobs:
         env:
           BREADTH_SYMBOLS: RELIANCE,TCS,INFY
         run: |
-          python src/breadth.py
+          python -u src/breadth.py
