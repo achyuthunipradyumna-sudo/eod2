@@ -2,15 +2,10 @@ name: Market Breadth (IST)
 
 on:
   schedule:
-    # -------------------------------
-    # DAILY: Every day at 8:00 PM IST
-    # IST = UTC + 5:30 → 14:30 UTC
-    # -------------------------------
+    # Daily at 8:00 PM IST (14:30 UTC)
     - cron: "30 14 * * *"
 
-    # -----------------------------------------
-    # MONTHLY: 1st day of month at 8:00 PM IST
-    # -----------------------------------------
+    # Monthly at 8:00 PM IST on 1st
     - cron: "30 14 1 * *"
 
   workflow_dispatch:
@@ -20,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo with submodules
+      - name: Checkout eod2 repo
         uses: actions/checkout@v4
         with:
           submodules: recursive
@@ -38,8 +33,40 @@ jobs:
         run: |
           python -u src/breadth.py
 
-      - name: Upload breadth artifacts
-        uses: actions/upload-artifact@v4
+      # -----------------------------
+      # Checkout MarketAnalytics repo
+      # -----------------------------
+      - name: Checkout MarketAnalytics repo
+        uses: actions/checkout@v4
         with:
-          name: breadth-output
-          path: output/
+          repository: achyuthunipradyumna-sudo/MarketAnalytics
+          token: ${{ secrets.MARKET_ANALYTICS_PAT }}
+          path: MarketAnalytics
+
+      # -----------------------------
+      # Copy outputs
+      # -----------------------------
+      - name: Copy breadth outputs
+        run: |
+          TODAY=$(date -u +"%Y-%m-%d")
+
+          mkdir -p MarketAnalytics/daily
+          mkdir -p MarketAnalytics/lookback
+          mkdir -p MarketAnalytics/history
+
+          cp output/breadth_${TODAY}.csv MarketAnalytics/daily/
+          cp output/breadth_lookback_260.csv MarketAnalytics/lookback/
+          cp output/breadth_full_history.csv MarketAnalytics/history/
+
+      # -----------------------------
+      # Commit & push
+      # -----------------------------
+      - name: Commit and push to MarketAnalytics
+        run: |
+          cd MarketAnalytics
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+          git add .
+          git commit -m "Update breadth data (${GITHUB_RUN_ID})" || echo "No changes"
+          git push
