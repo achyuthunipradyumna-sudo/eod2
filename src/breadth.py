@@ -4,9 +4,7 @@ import numpy as np
 from pathlib import Path
 from datetime import datetime
 
-# =============================
-# CONFIG
-# =============================
+# ---------------- CONFIG ----------------
 DATA_DIR = Path("src/eod2_data/daily")
 OUTPUT_DIR = Path("output")
 OUTPUT_DIR.mkdir(exist_ok=True)
@@ -15,9 +13,7 @@ DMA_WINDOWS = [20, 50, 200]
 AD_MA_WINDOWS = [50, 200]
 NHNL_LOOKBACK = 252
 
-# =============================
-# HELPERS
-# =============================
+# ---------------- HELPERS ----------------
 def zscore(series, window):
     mean = series.rolling(window).mean()
     std = series.rolling(window).std()
@@ -29,110 +25,94 @@ def percentile(series):
 def load_symbols():
     env = os.getenv("BREADTH_SYMBOLS")
     if env:
-        symbols = [s.strip().upper() for s in env.split(",")]
-        print(f"[INFO] Using BREADTH_SYMBOLS: {symbols}")
-        return symbols
-    print("[INFO] No BREADTH_SYMBOLS set – scanning all CSVs")
-    return [f.stem for f in DATA_DIR.glob("*.csv")]
+        syms = [s.strip().upper() for s in env.split(",")]
+        print(f"[INFO] Using BREADTH_SYMBOLS = {syms}", flush=True)
+        return syms
 
-# =============================
-# LOAD ALL DATA
-# =============================
-def load_all_prices(symbols):
-    print("[INFO] Loading price data")
-    frames = []
+    syms = [f.stem for f in DATA_DIR.glob("*.csv")]
+    print(f"[INFO] Using ALL symbols ({len(syms)})", flush=True)
+    return syms
 
-    for i, sym in enumerate(symbols, 1):
+# ---------------- MAIN ----------------
+def main():
+    symbols = load_symbols()
+    print(f"[INFO] Symbols to process: {len(symbols)}", flush=True)
+
+    closes = {}
+    dates = None
+
+    # ---- Load data ----
+    for sym in symbols:
         path = DATA_DIR / f"{sym}.csv"
         if not path.exists():
-            print(f"[WARN] Missing {sym}")
+            print(f"[WARN] Missing {sym}", flush=True)
             continue
 
         df = pd.read_csv(path, parse_dates=["Date"])
-        df = df[["Date", "Close"]].copy()
-        df["symbol"] = sym
-        frames.append(df)
+        df.sort_values("Date", inplace=True)
 
-        if i % 10 == 0:
-            print(f"[INFO] Loaded {i}/{len(symbols)} stocks")
+        if dates is None:
+            dates = df["Date"]
 
-    return pd.concat(frames, ignore_index=True)
+        closes[sym] = df["Close"].reset_index(drop=True)
 
-# =============================
-# A/D BREADTH
-# =============================
-def compute_ad(prices):
-    print("[INFO] Computing Advances / Declines")
+        print(f"[LOAD] {sym} rows={len(df)}", flush=True)
 
-    prices.sort_values(["symbol", "Date"], inplace=True)
-    prices["prev_close"] = prices.groupby("symbol")["Close"].shift(1)
+    price_df = pd.DataFrame(closes)
+    price_df.index = dates
 
-    prices["advance"] = (prices["Close"] > prices["prev_close"]).astype(int)
-    prices["decline"] = (prices["Close"] < prices["prev_close"]).astype(int)
+    # ---- ADV / DECL ----
+    adv = (price_df > price_df.shift(1)).sum(axis=1)
+    dec = (price_df < price_df.shift(1)).sum(axis=1)
 
-    daily = prices.groupby("Date").agg(
-        advances=("advance", "sum"),
-        declines=("decline", "sum")
-    )
+    net_ad = adv - dec
+    ad_ratio = adv / (adv + dec)
 
-    daily["net_ad"] = daily["advances"] - daily["declines"]
-    daily["ad_ratio"] = daily["advances"] / daily["declines"].replace(0, np.nan)
+    ad_df = pd.DataFrame({
+        "date": price_df.index,
+        "advances": adv,
+        "declines": dec,
+        "net_ad": net_ad,
+        "ad_ratio": ad_ratio
+    })
 
-    # Moving averages
+    # ---- A/D MAs ----
     for w in AD_MA_WINDOWS:
-        daily[f"net_ad_{w}dma"] = daily["net_ad"].rolling(w).mean()
+        ad_df[f"net_ad_ma_{w}"] = net_ad.rolling(w).mean()
+        ad_df[f"net_ad_z_{w}"] = zscore(net_ad, w)
+        ad_df[f"net_ad_pct_{w}"] = percentile(net_ad)
 
-    # Normalization
-    daily["net_ad_z"] = zscore(daily["net_ad"], 200)
-    daily["net_ad_pct"] = percentile(daily["net_ad"])
+    print("[INFO] A/D metrics computed", flush=True)
 
-    return daily.reset_index()
+    # ---- DMA Breadth ----
+    dma_rows = []
 
-# =============================
-# DMA & NH/NL BREADTH
-# =============================
-def compute_stock_breadth(prices):
-    print("[INFO] Computing stock-level breadth")
-
-    results = []
-
-    for sym, df in prices.groupby("symbol"):
-        df = df.sort_values("Date")
-        close = df["Close"]
-
-        row = {"symbol": sym, "date": df["Date"].iloc[-1]}
-
+    for sym, close in closes.items():
+        row = {"symbol": sym}
         for w in DMA_WINDOWS:
             dma = close.rolling(w).mean()
             row[f"above_{w}dma"] = int(close.iloc[-1] > dma.iloc[-1])
+            row[f"dist_{w}dma_pct"] = (close.iloc[-1] / dma.iloc[-1] - 1) * 100
+        dma_rows.append(row)
 
-        row["new_52w_high"] = int(close.iloc[-1] >= close.rolling(NHNL_LOOKBACK).max().iloc[-1])
-        row["new_52w_low"] = int(close.iloc[-1] <= close.rolling(NHNL_LOOKBACK).min().iloc[-1])
+    dma_df = pd.DataFrame(dma_rows)
 
-        results.append(row)
+    # ---- New High / Low ----
+    nh = (price_df >= price_df.rolling(NHNL_LOOKBACK).max()).iloc[-1].sum()
+    nl = (price_df <= price_df.rolling(NHNL_LOOKBACK).min()).iloc[-1].sum()
 
-    return pd.DataFrame(results)
+    # ---- Save ----
+    today = datetime.now().strftime("%Y-%m-%d")
 
-# =============================
-# MAIN
-# =============================
-def main():
-    symbols = load_symbols()
-    print(f"[INFO] Symbols count: {len(symbols)}")
+    ad_file = OUTPUT_DIR / f"ad_breadth_{today}.csv"
+    dma_file = OUTPUT_DIR / f"dma_breadth_{today}.csv"
 
-    prices = load_all_prices(symbols)
+    ad_df.to_csv(ad_file, index=False)
+    dma_df.to_csv(dma_file, index=False)
 
-    # --- A/D ---
-    ad_df = compute_ad(prices)
-    ad_out = OUTPUT_DIR / "ad_breadth.csv"
-    ad_df.to_csv(ad_out, index=False)
-    print(f"[SUCCESS] Saved {ad_out}")
-
-    # --- Stock Breadth ---
-    sb_df = compute_stock_breadth(prices)
-    sb_out = OUTPUT_DIR / "stock_breadth_snapshot.csv"
-    sb_df.to_csv(sb_out, index=False)
-    print(f"[SUCCESS] Saved {sb_out}")
+    print(f"[SUCCESS] Saved {ad_file}", flush=True)
+    print(f"[SUCCESS] Saved {dma_file}", flush=True)
+    print(f"[SUMMARY] New Highs={nh} New Lows={nl}", flush=True)
 
 if __name__ == "__main__":
     main()
