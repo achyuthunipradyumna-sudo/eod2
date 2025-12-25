@@ -1,43 +1,45 @@
-name: Daily Market Breadth
+name: Market Breadth (IST)
 
 on:
   schedule:
-    # 8:00 PM IST = 14:30 UTC
-    - cron: '30 14 * * *'
+    # -------------------------------
+    # DAILY: Every day at 8:00 PM IST
+    # IST = UTC + 5:30 → 14:30 UTC
+    # -------------------------------
+    - cron: "30 14 * * *"
+
+    # -----------------------------------------
+    # MONTHLY: 1st day of month at 8:00 PM IST
+    # -----------------------------------------
+    - cron: "30 14 1 * *"
+
   workflow_dispatch:
 
 jobs:
-  breadth:
+  run-breadth:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
 
     steps:
-      - name: Checkout repo (with submodules)
+      - name: Checkout repo with submodules
         uses: actions/checkout@v4
         with:
           submodules: recursive
-          fetch-depth: 1
 
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.10'
+          python-version: "3.10"
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Sync latest NSE EOD data
-        run: |
-          python -u src/init.py
-
-      - name: Run market breadth (ALL stocks)
+      - name: Run breadth analysis
         run: |
           python -u src/breadth.py
 
-      - name: Upload breadth output
+      - name: Upload breadth artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: daily-breadth
+          name: breadth-output
           path: output/
