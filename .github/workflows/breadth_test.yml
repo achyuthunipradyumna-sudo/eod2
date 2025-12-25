@@ -2,8 +2,12 @@ name: Market Breadth (IST)
 
 on:
   schedule:
-    - cron: "30 14 * * *"   # Daily 8 PM IST
-    - cron: "30 14 1 * *"   # Monthly 8 PM IST
+    # Daily at 8:00 PM IST (14:30 UTC)
+    - cron: "30 14 * * *"
+
+    # Monthly (1st) at 8:00 PM IST
+    - cron: "30 14 1 * *"
+
   workflow_dispatch:
 
 jobs:
@@ -19,19 +23,37 @@ jobs:
         with:
           submodules: recursive
 
+      # -----------------------------
+      # Setup Python
+      # -----------------------------
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
           python-version: "3.10"
 
+      # -----------------------------
+      # Install dependencies
+      # -----------------------------
       - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Run breadth analysis
-        run: python -u src/breadth.py
+        run: |
+          pip install -r requirements.txt
 
       # -----------------------------
-      # Checkout MarketAnalytics repo (PAT)
+      # UPDATE EOD DATA (CRITICAL)
+      # -----------------------------
+      - name: Update NSE EOD data
+        run: |
+          python -u src/init.py
+
+      # -----------------------------
+      # Run breadth analysis
+      # -----------------------------
+      - name: Run breadth analysis
+        run: |
+          python -u src/breadth.py
+
+      # -----------------------------
+      # Checkout MarketAnalytics repo
       # -----------------------------
       - name: Checkout MarketAnalytics repo
         uses: actions/checkout@v4
@@ -52,26 +74,29 @@ jobs:
           DAILY_FILE=$(ls -t output/breadth_*.csv | grep -v lookback | grep -v full_history | head -1 || true)
 
           if [ -n "$DAILY_FILE" ]; then
+            echo "[INFO] Copying daily file: $DAILY_FILE"
             cp "$DAILY_FILE" MarketAnalytics/daily/
+          else
+            echo "[WARN] No daily breadth file found"
           fi
 
           [ -f output/breadth_lookback_260.csv ] && cp output/breadth_lookback_260.csv MarketAnalytics/lookback/
           [ -f output/breadth_full_history.csv ] && cp output/breadth_full_history.csv MarketAnalytics/history/
 
       # -----------------------------
-      # Commit & push (FIXED)
+      # Commit & push to MarketAnalytics
       # -----------------------------
       - name: Commit & push MarketAnalytics updates
         env:
-          PAT: ${{ secrets.MARKET_ANALYTICS_PAT }}
+          MARKET_ANALYTICS_PAT: ${{ secrets.MARKET_ANALYTICS_PAT }}
         run: |
           cd MarketAnalytics
 
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-          # 🔑 THIS IS THE CRITICAL FIX
-          git remote set-url origin https://x-access-token:${MARKET_ANALYTICS_PAT}@github.com/achyuthunipradyumna-sudo/MarketAnalytics.git
+          git remote set-url origin \
+            https://x-access-token:${MARKET_ANALYTICS_PAT}@github.com/achyuthunipradyumna-sudo/MarketAnalytics.git
 
           if [[ -n "$(git status --porcelain)" ]]; then
             git add .
