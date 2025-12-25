@@ -1,157 +1,115 @@
 import os
-import glob
 import pandas as pd
 import numpy as np
-
-# ---------------- CONFIG ---------------- #
 from pathlib import Path
+from datetime import datetime
+
+# -----------------------------
+# CONFIG
+# -----------------------------
 DATA_DIR = Path("src/eod2_data/daily")
-OUTPUT_DIR = "output"
-OUTPUT_FILE = "breadth_daily.csv"
+OUTPUT_DIR = Path("output")
+OUTPUT_DIR.mkdir(exist_ok=True)
 
-DMAS_STOCKS = [20, 50, 100, 200]
-NH_NL_LOOKBACK = 252  # 52-week
+DMA_WINDOWS = [20, 50, 200]
+NHNL_LOOKBACK = 252  # 52-week highs/lows
+Z_WINDOWS = [50, 200]
 
-# ---------------------------------------- #
-
-def zscore(series, window=252):
+# -----------------------------
+# HELPERS
+# -----------------------------
+def zscore(series, window):
     mean = series.rolling(window).mean()
     std = series.rolling(window).std()
     return (series - mean) / std
 
 
-def percentile(series, window=252):
+def percentile_rank(series, window):
     return series.rolling(window).apply(
         lambda x: pd.Series(x).rank(pct=True).iloc[-1],
         raw=False
     )
 
 
-def load_all_stocks():
-    files = glob.glob(os.path.join(DATA_DIR, "*.csv"))
-    stocks = {}
+def load_symbols():
+    """
+    Priority:
+    1. BREADTH_SYMBOLS env variable
+    2. All CSVs in data directory
+    """
+    env_symbols = os.getenv("BREADTH_SYMBOLS")
 
-    for f in files:
-        symbol = os.path.basename(f).replace(".csv", "")
-        df = pd.read_csv(f, parse_dates=["Date"])
-        df = df.sort_values("Date")
-        df = df[["Date", "Open", "High", "Low", "Close"]]
-        stocks[symbol] = df
+    if env_symbols:
+        symbols = [s.strip().upper() for s in env_symbols.split(",")]
+        print(f"[INFO] Using BREADTH_SYMBOLS: {symbols}")
+        return symbols
 
-    return stocks
-
-
-def compute_breadth(stocks):
-    all_dates = sorted(
-        set().union(*[df["Date"] for df in stocks.values()])
-    )
-
-    results = []
-
-    for date in all_dates:
-        advances = 0
-        declines = 0
-
-        above_dma = {d: 0 for d in DMAS_STOCKS}
-        total_valid = 0
-
-        new_highs = 0
-        new_lows = 0
-
-        for df in stocks.values():
-            if date not in df["Date"].values:
-                continue
-
-            row = df[df["Date"] == date].iloc[0]
-            prev = df[df["Date"] < date]
-
-            if prev.empty:
-                continue
-
-            prev_close = prev.iloc[-1]["Close"]
-            close = row["Close"]
-
-            # -------- A / D -------- #
-            if close > prev_close:
-                advances += 1
-            elif close < prev_close:
-                declines += 1
-
-            # -------- DMAs -------- #
-            total_valid += 1
-            for d in DMAS_STOCKS:
-                if len(prev) >= d:
-                    dma = prev.tail(d)["Close"].mean()
-                    if close > dma:
-                        above_dma[d] += 1
-
-            # -------- NH / NL -------- #
-            if len(prev) >= NH_NL_LOOKBACK:
-                high_52w = prev.tail(NH_NL_LOOKBACK)["High"].max()
-                low_52w = prev.tail(NH_NL_LOOKBACK)["Low"].min()
-
-                if close >= high_52w:
-                    new_highs += 1
-                elif close <= low_52w:
-                    new_lows += 1
-
-        if total_valid == 0:
-            continue
-
-        row_out = {
-            "Date": date,
-            "Advances": advances,
-            "Declines": declines,
-            "AD_Net": advances - declines,
-            "NH": new_highs,
-            "NL": new_lows,
-            "NH_NL_Net": new_highs - new_lows,
-        }
-
-        for d in DMAS_STOCKS:
-            row_out[f"Pct_Above_{d}DMA"] = above_dma[d] / total_valid * 100
-
-        results.append(row_out)
-
-    return pd.DataFrame(results).sort_values("Date")
+    print("[INFO] No BREADTH_SYMBOLS set – scanning all stocks")
+    return [f.stem for f in DATA_DIR.glob("*.csv")]
 
 
-def enrich_metrics(df):
-    # ----- A/D ----- #
-    df["AD_50DMA"] = df["AD_Net"].rolling(50).mean()
-    df["AD_200DMA"] = df["AD_Net"].rolling(200).mean()
-    df["AD_Z"] = zscore(df["AD_Net"])
-    df["AD_Pctl"] = percentile(df["AD_Net"])
+# -----------------------------
+# MAIN LOGIC
+# -----------------------------
+def process_stock(symbol):
+    file_path = DATA_DIR / f"{symbol}.csv"
+    if not file_path.exists():
+        print(f"[WARN] Missing file for {symbol}")
+        return None
 
-    # ----- NH / NL ----- #
-    df["NHNL_Z"] = zscore(df["NH_NL_Net"])
-    df["NHNL_Pctl"] = percentile(df["NH_NL_Net"])
+    df = pd.read_csv(file_path, parse_dates=["Date"])
+    df.sort_values("Date", inplace=True)
 
-    # ----- DMA Breadth ----- #
-    for d in DMAS_STOCKS:
-        col = f"Pct_Above_{d}DMA"
-        df[f"{col}_Z"] = zscore(df[col])
-        df[f"{col}_Pctl"] = percentile(df[col])
+    close = df["Close"]
 
-    return df
+    out = {
+        "symbol": symbol,
+        "date": df["Date"].iloc[-1]
+    }
+
+    # ----- DMA breadth (individual stock) -----
+    for w in DMA_WINDOWS:
+        dma = close.rolling(w).mean()
+        above = close.iloc[-1] > dma.iloc[-1]
+
+        out[f"above_{w}dma"] = int(above)
+        out[f"dist_{w}dma_pct"] = (close.iloc[-1] / dma.iloc[-1] - 1) * 100
+
+        # Normalization
+        out[f"z_{w}dma_dist"] = zscore(close / dma - 1, 200).iloc[-1]
+        out[f"pct_{w}dma_dist"] = percentile_rank(close / dma - 1, 200).iloc[-1]
+
+    # ----- New High / New Low -----
+    rolling_high = close.rolling(NHNL_LOOKBACK).max()
+    rolling_low = close.rolling(NHNL_LOOKBACK).min()
+
+    out["new_52w_high"] = int(close.iloc[-1] >= rolling_high.iloc[-1])
+    out["new_52w_low"] = int(close.iloc[-1] <= rolling_low.iloc[-1])
+
+    return out
 
 
 def main():
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    symbols = load_symbols()
+    results = []
 
-    print("Loading stock data...")
-    stocks = load_all_stocks()
+    print(f"[INFO] Processing {len(symbols)} stocks")
 
-    print("Computing breadth metrics...")
-    breadth = compute_breadth(stocks)
+    for i, sym in enumerate(symbols, 1):
+        print(f"[{i}/{len(symbols)}] Processing {sym}")
+        row = process_stock(sym)
+        if row:
+            results.append(row)
 
-    print("Adding normalization & historical context...")
-    breadth = enrich_metrics(breadth)
+    if not results:
+        print("[ERROR] No data processed")
+        return
 
-    output_path = os.path.join(OUTPUT_DIR, OUTPUT_FILE)
-    breadth.to_csv(output_path, index=False)
+    df_out = pd.DataFrame(results)
+    out_file = OUTPUT_DIR / f"breadth_snapshot_{datetime.now().date()}.csv"
+    df_out.to_csv(out_file, index=False)
 
-    print(f"Breadth data saved to {output_path}")
+    print(f"[SUCCESS] Saved breadth snapshot → {out_file}")
 
 
 if __name__ == "__main__":
