@@ -4,7 +4,8 @@ import pandas as pd
 import numpy as np
 
 # ---------------- CONFIG ---------------- #
-DATA_DIR = "src/eod2_data/daily"
+from pathlib import Path
+DATA_DIR = Path("src/eod2_data/daily")
 OUTPUT_DIR = "output"
 OUTPUT_FILE = "breadth_daily.csv"
 
