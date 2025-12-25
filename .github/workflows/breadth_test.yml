@@ -37,14 +37,14 @@ jobs:
           python -u src/breadth.py
 
       # -----------------------------
-      # Checkout MarketAnalytics repo
+      # Checkout MarketAnalytics repo (USING PAT)
       # -----------------------------
       - name: Checkout MarketAnalytics repo
         uses: actions/checkout@v4
         with:
           repository: achyuthunipradyumna-sudo/MarketAnalytics
           path: MarketAnalytics
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.MARKET_ANALYTICS_PAT }}
 
       # -----------------------------
       # Copy generated files safely
@@ -57,34 +57,34 @@ jobs:
           mkdir -p MarketAnalytics/lookback
           mkdir -p MarketAnalytics/history
 
-          # ---- DAILY: pick latest daily breadth file ----
-          DAILY_FILE=$(ls -t output/breadth_*.csv | grep -v full_history | grep -v lookback | head -1)
+          # ---- DAILY ----
+          DAILY_FILE=$(ls -t output/breadth_*.csv | grep -v full_history | grep -v lookback | head -1 || true)
 
-          if [ -f "$DAILY_FILE" ]; then
+          if [ -n "$DAILY_FILE" ]; then
             echo "[INFO] Copying daily file: $DAILY_FILE"
             cp "$DAILY_FILE" MarketAnalytics/daily/
           else
             echo "[WARN] No daily breadth file found"
           fi
 
-          # ---- LOOKBACK: optional ----
+          # ---- LOOKBACK (optional) ----
           if [ -f output/breadth_lookback_260.csv ]; then
             echo "[INFO] Copying lookback file"
             cp output/breadth_lookback_260.csv MarketAnalytics/lookback/
           else
-            echo "[INFO] Lookback file not present (expected on some runs)"
+            echo "[INFO] Lookback file not present"
           fi
 
-          # ---- FULL HISTORY: optional ----
+          # ---- FULL HISTORY (monthly) ----
           if [ -f output/breadth_full_history.csv ]; then
             echo "[INFO] Copying full history file"
             cp output/breadth_full_history.csv MarketAnalytics/history/
           else
-            echo "[INFO] Full history not present (expected before month-end)"
+            echo "[INFO] Full history not present"
           fi
 
       # -----------------------------
-      # Commit & push if changes exist
+      # Commit & push
       # -----------------------------
       - name: Commit & push MarketAnalytics updates
         run: |
