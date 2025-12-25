@@ -71,7 +71,7 @@ jobs:
           git config user.email "github-actions@github.com"
 
           # 🔑 THIS IS THE CRITICAL FIX
-          git remote set-url origin https://x-access-token:${PAT}@github.com/achyuthunipradyumna-sudo/MarketAnalytics.git
+          git remote set-url origin https://x-access-token:${MARKET_ANALYTICS_PAT}@github.com/achyuthunipradyumna-sudo/MarketAnalytics.git
 
           if [[ -n "$(git status --porcelain)" ]]; then
             git add .
