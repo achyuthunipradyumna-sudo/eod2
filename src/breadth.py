@@ -50,26 +50,26 @@ def load_stock(symbol):
     return df
 
 # ================= LABEL LOGIC =================
-def participation_label(ad_z):
-    if ad_z > 1:
+def participation_label(z):
+    if z > 1:
         return "strong_participation"
-    if ad_z < -1:
+    if z < -1:
         return "weak_participation"
     return "neutral_participation"
 
-def dma_label(pct_above_50):
-    if pct_above_50 > 70:
+def dma_label(pct):
+    if pct > 70:
         return "broad_uptrend"
-    if pct_above_50 < 30:
+    if pct < 30:
         return "broad_downtrend"
     return "range_bound"
 
-def nhnl_label(nh, nl, universe):
-    if nh > 0.1 * universe:
-        return "momentum_expansion"
-    if nl > 0.1 * universe:
-        return "panic_or_distribution"
-    return "normal"
+def nhnl_label(z):
+    if z > 1:
+        return "strong_momentum"
+    if z < -1:
+        return "distribution"
+    return "balanced"
 
 # ================= MAIN =================
 def main():
@@ -87,18 +87,19 @@ def main():
 
     price_df = pd.DataFrame(prices).dropna(how="all")
     universe = price_df.count(axis=1)
+
     print(f"[INFO] Price matrix shape: {price_df.shape}", flush=True)
 
-    # -------- PILLAR 1: ADV / DECL --------
-    ret = price_df.diff()
-    adv = (ret > 0).sum(axis=1)
-    dec = (ret < 0).sum(axis=1)
+    # ---------- PILLAR 1: ADV / DECL ----------
+    returns = price_df.diff()
+    adv = (returns > 0).sum(axis=1)
+    dec = (returns < 0).sum(axis=1)
     ad = adv - dec
 
     ad_df = pd.DataFrame({
         "advances": adv,
         "declines": dec,
-        "ad": ad,
+        "ad": ad
     })
 
     for w in AD_MA_WINDOWS:
@@ -107,51 +108,44 @@ def main():
 
     ad_df["ad_pct"] = percentile(ad_df["ad"])
 
-    # -------- PILLAR 2: DMA BREADTH --------
+    # ---------- PILLAR 2: DMA BREADTH ----------
     dma_df = pd.DataFrame(index=price_df.index)
     for w in DMA_WINDOWS:
         dma = price_df.rolling(w).mean()
         above = (price_df > dma).sum(axis=1)
         dma_df[f"pct_above_{w}dma"] = above / universe * 100
 
-    # -------- PILLAR 3: NEW HIGHS / NEW LOWS (NORMALIZED) --------
-	highs = price_df.rolling(NHNL_LOOKBACK).max()
-	lows = price_df.rolling(NHNL_LOOKBACK).min()
+    # ---------- PILLAR 3: NH / NL (NORMALIZED) ----------
+    highs = price_df.rolling(NHNL_LOOKBACK).max()
+    lows = price_df.rolling(NHNL_LOOKBACK).min()
 
-	new_highs = (price_df >= highs).sum(axis=1)
-	new_lows = (price_df <= lows).sum(axis=1)
+    new_highs = (price_df >= highs).sum(axis=1)
+    new_lows = (price_df <= lows).sum(axis=1)
 
-	universe = price_df.count(axis=1)
+    nh_pct = new_highs / universe * 100
+    nl_pct = new_lows / universe * 100
 
-	nh_pct = new_highs / universe * 100
-	nl_pct = new_lows / universe * 100
+    nhnl_net = nh_pct - nl_pct
+    nhnl_z = zscore(nhnl_net, NHNL_LOOKBACK)
 
-	nhnl_net = nh_pct - nl_pct
-	nhnl_z = zscore(nhnl_net, NHNL_LOOKBACK)
+    nhnl_df = pd.DataFrame({
+        "new_highs": new_highs,
+        "new_lows": new_lows,
+        "nh_pct": nh_pct,
+        "nl_pct": nl_pct,
+        "nhnl_net": nhnl_net,
+        "nhnl_z": nhnl_z
+    })
 
-	nhnl_df = pd.DataFrame({
-    	"new_highs": new_highs,
-    	"new_lows": new_lows,
-    	"nh_pct": nh_pct,
-    	"nl_pct": nl_pct,
-    	"nhnl_net": nhnl_net,
-    	"nhnl_z": nhnl_z
-	})
-
-    # -------- MERGE --------
+    # ---------- MERGE ----------
     breadth = pd.concat([ad_df, dma_df, nhnl_df], axis=1).dropna()
 
-    # -------- LABELS --------
+    # ---------- LABELS ----------
     breadth["participation_label"] = breadth["ad_z_50"].apply(participation_label)
     breadth["dma_label"] = breadth["pct_above_50dma"].apply(dma_label)
-    breadth["nhnl_label"] = [
-        nhnl_label(nh, nl, universe.loc[d])
-        for d, nh, nl in zip(breadth.index,
-                             breadth["new_highs"],
-                             breadth["new_lows"])
-    ]
+    breadth["nhnl_label"] = breadth["nhnl_z"].apply(nhnl_label)
 
-    # ================= OUTPUTS =================
+    # ---------- OUTPUTS ----------
     today = breadth.index[-1]
 
     # 1️⃣ DAILY SNAPSHOT (ONE ROW ONLY)
@@ -160,12 +154,12 @@ def main():
     daily_df.to_csv(daily_file)
     print(f"[SUCCESS] Daily breadth saved → {daily_file}", flush=True)
 
-    # 2️⃣ FULL HISTORY (MONTHLY UPDATE)
+    # 2️⃣ FULL HISTORY (MONTHLY)
     update_full = False
     if not FULL_HISTORY_FILE.exists():
         update_full = True
-        print("[INFO] Creating full history", flush=True)
         full = pd.DataFrame()
+        print("[INFO] Creating full history", flush=True)
     else:
         full = pd.read_csv(FULL_HISTORY_FILE, parse_dates=["Date"], index_col="Date")
         if full.index.max().month != today.month:
@@ -179,7 +173,7 @@ def main():
         combined.to_csv(FULL_HISTORY_FILE)
         print(f"[SUCCESS] Full history updated → {FULL_HISTORY_FILE}", flush=True)
 
-    # 3️⃣ LOOKBACK FILE (260 days)
+    # 3️⃣ LOOKBACK FILE
     lookback = breadth.tail(LOOKBACK_DAILY)
     lookback_file = OUTPUT_DIR / f"breadth_lookback_{LOOKBACK_DAILY}.csv"
     lookback.to_csv(lookback_file)
