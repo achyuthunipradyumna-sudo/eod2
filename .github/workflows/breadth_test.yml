@@ -1,34 +1,43 @@
-name: Breadth Test Run
+name: Daily Market Breadth
 
 on:
-  workflow_dispatch:   # manual trigger from GitHub UI
+  schedule:
+    # 8:00 PM IST = 14:30 UTC
+    - cron: '30 14 * * *'
+  workflow_dispatch:
 
 jobs:
-  breadth-test:
+  breadth:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout repo (with submodules)
         uses: actions/checkout@v4
         with:
           submodules: recursive
+          fetch-depth: 1
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - name: Set up Python
+        uses: actions/setup-python@v4
         with:
-          python-version: "3.10"
+          python-version: '3.10'
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Sync latest EOD data
+      - name: Sync latest NSE EOD data
         run: |
-          python src/init.py
+          python -u src/init.py
 
-      - name: Run breadth for selected stocks
-        env:
-          BREADTH_SYMBOLS: RELIANCE,TCS,INFY
+      - name: Run market breadth (ALL stocks)
         run: |
           python -u src/breadth.py
+
+      - name: Upload breadth output
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-breadth
+          path: output/
