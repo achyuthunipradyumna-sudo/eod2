@@ -2,10 +2,10 @@ name: Market Breadth (IST)
 
 on:
   schedule:
-    # Daily at 8:00 PM IST (14:30 UTC)
+    # Daily: 8:00 PM IST (14:30 UTC)
     - cron: "30 14 * * *"
 
-    # Monthly at 8:00 PM IST on 1st
+    # Monthly: 1st day, 8:00 PM IST
     - cron: "30 14 1 * *"
 
   workflow_dispatch:
@@ -15,7 +15,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout eod2 repo
+      # -----------------------------
+      # Checkout EOD2 repo
+      # -----------------------------
+      - name: Checkout EOD2 repo
         uses: actions/checkout@v4
         with:
           submodules: recursive
@@ -40,33 +43,60 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: achyuthunipradyumna-sudo/MarketAnalytics
-          token: ${{ secrets.MARKET_ANALYTICS_PAT }}
           path: MarketAnalytics
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       # -----------------------------
-      # Copy outputs
+      # Copy generated files safely
       # -----------------------------
       - name: Copy breadth outputs
         run: |
-          TODAY=$(date -u +"%Y-%m-%d")
+          set -e
 
           mkdir -p MarketAnalytics/daily
           mkdir -p MarketAnalytics/lookback
           mkdir -p MarketAnalytics/history
 
-          cp output/breadth_${TODAY}.csv MarketAnalytics/daily/
-          cp output/breadth_lookback_260.csv MarketAnalytics/lookback/
-          cp output/breadth_full_history.csv MarketAnalytics/history/
+          # ---- DAILY: pick latest daily breadth file ----
+          DAILY_FILE=$(ls -t output/breadth_*.csv | grep -v full_history | grep -v lookback | head -1)
+
+          if [ -f "$DAILY_FILE" ]; then
+            echo "[INFO] Copying daily file: $DAILY_FILE"
+            cp "$DAILY_FILE" MarketAnalytics/daily/
+          else
+            echo "[WARN] No daily breadth file found"
+          fi
+
+          # ---- LOOKBACK: optional ----
+          if [ -f output/breadth_lookback_260.csv ]; then
+            echo "[INFO] Copying lookback file"
+            cp output/breadth_lookback_260.csv MarketAnalytics/lookback/
+          else
+            echo "[INFO] Lookback file not present (expected on some runs)"
+          fi
+
+          # ---- FULL HISTORY: optional ----
+          if [ -f output/breadth_full_history.csv ]; then
+            echo "[INFO] Copying full history file"
+            cp output/breadth_full_history.csv MarketAnalytics/history/
+          else
+            echo "[INFO] Full history not present (expected before month-end)"
+          fi
 
       # -----------------------------
-      # Commit & push
+      # Commit & push if changes exist
       # -----------------------------
-      - name: Commit and push to MarketAnalytics
+      - name: Commit & push MarketAnalytics updates
         run: |
           cd MarketAnalytics
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
+          git status
 
-          git add .
-          git commit -m "Update breadth data (${GITHUB_RUN_ID})" || echo "No changes"
-          git push
+          if [[ -n "$(git status --porcelain)" ]]; then
+            git config user.name "github-actions"
+            git config user.email "github-actions@github.com"
+            git add .
+            git commit -m "Update market breadth data"
+            git push
+          else
+            echo "[INFO] No changes to commit"
+          fi
