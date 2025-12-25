@@ -10,14 +10,11 @@ OUTPUT_DIR = Path("output")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 DMA_WINDOWS = [20, 50, 200]
-AD_MA_WINDOWS = [50, 200]
-NHNL_LOOKBACK = 252
+Z_WINDOW = 200
 
 # ---------------- HELPERS ----------------
 def zscore(series, window):
-    mean = series.rolling(window).mean()
-    std = series.rolling(window).std()
-    return (series - mean) / std
+    return (series - series.rolling(window).mean()) / series.rolling(window).std()
 
 def percentile(series):
     return series.rank(pct=True)
@@ -28,9 +25,8 @@ def load_symbols():
         syms = [s.strip().upper() for s in env.split(",")]
         print(f"[INFO] Using BREADTH_SYMBOLS = {syms}", flush=True)
         return syms
-
-    syms = [f.stem for f in DATA_DIR.glob("*.csv")]
-    print(f"[INFO] Using ALL symbols ({len(syms)})", flush=True)
+    syms = [f.stem.upper() for f in DATA_DIR.glob("*.csv")]
+    print(f"[INFO] Loaded {len(syms)} symbols from disk", flush=True)
     return syms
 
 # ---------------- MAIN ----------------
@@ -38,12 +34,12 @@ def main():
     symbols = load_symbols()
     print(f"[INFO] Symbols to process: {len(symbols)}", flush=True)
 
-    closes = {}
+    price_matrix = {}
     dates = None
 
-    # ---- Load data ----
+    # ---------- LOAD PRICES ----------
     for sym in symbols:
-        path = DATA_DIR / f"{sym}.csv"
+        path = DATA_DIR / f"{sym.lower()}.csv"  # 🔑 CASE FIX
         if not path.exists():
             print(f"[WARN] Missing {sym}", flush=True)
             continue
@@ -51,68 +47,55 @@ def main():
         df = pd.read_csv(path, parse_dates=["Date"])
         df.sort_values("Date", inplace=True)
 
-        if dates is None:
-            dates = df["Date"]
+        price_matrix[sym] = df["Close"].values
+        dates = df["Date"].values
 
-        closes[sym] = df["Close"].reset_index(drop=True)
+        print(f"[OK] Loaded {sym} ({len(df)})", flush=True)
 
-        print(f"[LOAD] {sym} rows={len(df)}", flush=True)
+    if not price_matrix:
+        raise RuntimeError("No price data loaded")
 
-    price_df = pd.DataFrame(closes)
-    price_df.index = dates
+    price_df = pd.DataFrame(price_matrix, index=dates)
 
-    # ---- ADV / DECL ----
-    adv = (price_df > price_df.shift(1)).sum(axis=1)
-    dec = (price_df < price_df.shift(1)).sum(axis=1)
-
-    net_ad = adv - dec
-    ad_ratio = adv / (adv + dec)
+    # ---------- ADVANCE / DECLINE ----------
+    returns = price_df.diff()
+    advances = (returns > 0).sum(axis=1)
+    declines = (returns < 0).sum(axis=1)
 
     ad_df = pd.DataFrame({
-        "date": price_df.index,
-        "advances": adv,
-        "declines": dec,
-        "net_ad": net_ad,
-        "ad_ratio": ad_ratio
-    })
+        "Date": price_df.index,
+        "Advances": advances,
+        "Declines": declines,
+        "AD_Net": advances - declines
+    }).set_index("Date")
 
-    # ---- A/D MAs ----
-    for w in AD_MA_WINDOWS:
-        ad_df[f"net_ad_ma_{w}"] = net_ad.rolling(w).mean()
-        ad_df[f"net_ad_z_{w}"] = zscore(net_ad, w)
-        ad_df[f"net_ad_pct_{w}"] = percentile(net_ad)
+    ad_df["AD_50DMA"] = ad_df["AD_Net"].rolling(50).mean()
+    ad_df["AD_200DMA"] = ad_df["AD_Net"].rolling(200).mean()
+    ad_df["AD_Z"] = zscore(ad_df["AD_Net"], Z_WINDOW)
+    ad_df["AD_PCTL"] = percentile(ad_df["AD_Net"])
 
-    print("[INFO] A/D metrics computed", flush=True)
-
-    # ---- DMA Breadth ----
+    # ---------- DMA BREADTH ----------
     dma_rows = []
+    for w in DMA_WINDOWS:
+        dma = price_df.rolling(w).mean()
+        pct_above = (price_df > dma).sum(axis=1) / price_df.count(axis=1) * 100
+        dma_rows.append(pd.DataFrame({
+            "Date": price_df.index,
+            f"Pct_Above_{w}DMA": pct_above
+        }).set_index("Date"))
 
-    for sym, close in closes.items():
-        row = {"symbol": sym}
-        for w in DMA_WINDOWS:
-            dma = close.rolling(w).mean()
-            row[f"above_{w}dma"] = int(close.iloc[-1] > dma.iloc[-1])
-            row[f"dist_{w}dma_pct"] = (close.iloc[-1] / dma.iloc[-1] - 1) * 100
-        dma_rows.append(row)
+    dma_df = pd.concat(dma_rows, axis=1)
+    for w in DMA_WINDOWS:
+        col = f"Pct_Above_{w}DMA"
+        dma_df[f"{col}_Z"] = zscore(dma_df[col], Z_WINDOW)
+        dma_df[f"{col}_PCTL"] = percentile(dma_df[col])
 
-    dma_df = pd.DataFrame(dma_rows)
-
-    # ---- New High / Low ----
-    nh = (price_df >= price_df.rolling(NHNL_LOOKBACK).max()).iloc[-1].sum()
-    nl = (price_df <= price_df.rolling(NHNL_LOOKBACK).min()).iloc[-1].sum()
-
-    # ---- Save ----
+    # ---------- SAVE ----------
     today = datetime.now().strftime("%Y-%m-%d")
+    ad_df.to_csv(OUTPUT_DIR / f"ad_breadth_{today}.csv")
+    dma_df.to_csv(OUTPUT_DIR / f"dma_breadth_{today}.csv")
 
-    ad_file = OUTPUT_DIR / f"ad_breadth_{today}.csv"
-    dma_file = OUTPUT_DIR / f"dma_breadth_{today}.csv"
-
-    ad_df.to_csv(ad_file, index=False)
-    dma_df.to_csv(dma_file, index=False)
-
-    print(f"[SUCCESS] Saved {ad_file}", flush=True)
-    print(f"[SUCCESS] Saved {dma_file}", flush=True)
-    print(f"[SUMMARY] New Highs={nh} New Lows={nl}", flush=True)
+    print("[SUCCESS] Breadth files written", flush=True)
 
 if __name__ == "__main__":
     main()
