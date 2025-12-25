@@ -114,13 +114,29 @@ def main():
         above = (price_df > dma).sum(axis=1)
         dma_df[f"pct_above_{w}dma"] = above / universe * 100
 
-    # -------- PILLAR 3: NH / NL --------
-    highs = price_df.rolling(NHNL_LOOKBACK).max()
-    lows = price_df.rolling(NHNL_LOOKBACK).min()
-    nh = (price_df >= highs).sum(axis=1)
-    nl = (price_df <= lows).sum(axis=1)
+    # -------- PILLAR 3: NEW HIGHS / NEW LOWS (NORMALIZED) --------
+	highs = price_df.rolling(NHNL_LOOKBACK).max()
+	lows = price_df.rolling(NHNL_LOOKBACK).min()
 
-    nhnl_df = pd.DataFrame({"new_highs": nh, "new_lows": nl})
+	new_highs = (price_df >= highs).sum(axis=1)
+	new_lows = (price_df <= lows).sum(axis=1)
+
+	universe = price_df.count(axis=1)
+
+	nh_pct = new_highs / universe * 100
+	nl_pct = new_lows / universe * 100
+
+	nhnl_net = nh_pct - nl_pct
+	nhnl_z = zscore(nhnl_net, NHNL_LOOKBACK)
+
+	nhnl_df = pd.DataFrame({
+    	"new_highs": new_highs,
+    	"new_lows": new_lows,
+    	"nh_pct": nh_pct,
+    	"nl_pct": nl_pct,
+    	"nhnl_net": nhnl_net,
+    	"nhnl_z": nhnl_z
+	})
 
     # -------- MERGE --------
     breadth = pd.concat([ad_df, dma_df, nhnl_df], axis=1).dropna()
