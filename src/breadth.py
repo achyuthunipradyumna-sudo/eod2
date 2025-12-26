@@ -16,6 +16,11 @@ LOOKBACK_DAILY = 260
 
 FULL_HISTORY_FILE = OUTPUT_DIR / "breadth_full_history.csv"
 
+INDEX_FILES = {
+    "nifty50": "nifty 50.csv",
+    "nifty_total": "nifty total market.csv"
+}
+
 # ================= HELPERS =================
 def zscore(series, window):
     mean = series.rolling(window).mean()
@@ -25,56 +30,84 @@ def zscore(series, window):
 def percentile(series):
     return series.rank(pct=True)
 
-def load_symbols():
-    env = os.getenv("BREADTH_SYMBOLS")
-    if env:
-        symbols = [s.strip().upper() for s in env.split(",")]
-        print(f"[INFO] Using BREADTH_SYMBOLS = {symbols}", flush=True)
-        return symbols
-
-    symbols = [f.stem.upper() for f in DATA_DIR.glob("*.csv")]
-    print(f"[INFO] Loaded {len(symbols)} symbols from disk", flush=True)
-    return symbols
-
 def load_stock(symbol):
     path = DATA_DIR / f"{symbol.lower()}.csv"
     if not path.exists():
-        print(f"[WARN] Missing {symbol}", flush=True)
         return None
-
     df = pd.read_csv(path, parse_dates=["Date"])
     df = df.sort_values("Date")[["Date", "Close"]]
     df.set_index("Date", inplace=True)
-
-    print(f"[OK] Loaded {symbol} ({len(df)})", flush=True)
     return df
 
-# ================= LABEL LOGIC =================
-def participation_label(z):
-    if z > 1:
-        return "strong_participation"
-    if z < -1:
-        return "weak_participation"
-    return "neutral_participation"
+def load_index(name):
+    path = DATA_DIR / INDEX_FILES[name]
+    df = pd.read_csv(path, parse_dates=["Date"])
+    df = df.sort_values("Date")
+    df.set_index("Date", inplace=True)
+    return df
 
-def dma_label(pct):
-    if pct > 70:
-        return "broad_uptrend"
-    if pct < 30:
-        return "broad_downtrend"
-    return "range_bound"
+# ================= TREND STRUCTURE =================
+def compute_trend_structure(idx_df):
+    close = idx_df["Close"]
 
-def nhnl_label(z):
-    if z > 1:
-        return "strong_momentum"
-    if z < -1:
-        return "distribution"
-    return "balanced"
+    dma50 = close.rolling(50).mean()
+    dma200 = close.rolling(200).mean()
+
+    # ---------- Direction ----------
+    price_above_200 = close > dma200
+    price_above_50 = close > dma50
+
+    dma200_slope = dma200.diff(20) / dma200.shift(20) * 100
+
+    def trend_bias(row):
+        if row["price_above_200"] and row["dma200_slope_pct"] > 0:
+            return "bullish"
+        if not row["price_above_200"] and row["dma200_slope_pct"] < 0:
+            return "bearish"
+        return "sideways"
+
+    # ---------- Strength ----------
+    dist_200 = (close / dma200 - 1) * 100
+    dist_200_z = zscore(dist_200, 250)
+
+    persist_200 = (
+        (close > dma200)
+        .rolling(250)
+        .mean() * 100
+    )
+
+    hh = close > close.rolling(20).max().shift(1)
+    ll = close < close.rolling(20).min().shift(1)
+    hh_ll_ratio = hh.rolling(100).sum() / (ll.rolling(100).sum() + 1)
+
+    # ---------- Integrity ----------
+    idx_highs = close.rolling(252).max()
+    idx_hh = close >= idx_highs
+
+    trend_df = pd.DataFrame({
+        "index_close": close,
+        "price_above_200": price_above_200.astype(int),
+        "price_above_50": price_above_50.astype(int),
+        "dma200_slope_pct": dma200_slope,
+        "trend_distance_200": dist_200,
+        "trend_distance_200_z": dist_200_z,
+        "trend_persistence_200": persist_200,
+        "hh_ll_ratio": hh_ll_ratio,
+        "index_hh": idx_hh.astype(int),
+    })
+
+    trend_df["trend_bias"] = trend_df.apply(trend_bias, axis=1)
+
+    return trend_df.dropna()
 
 # ================= MAIN =================
 def main():
-    symbols = load_symbols()
-    print(f"[INFO] Symbols to process: {len(symbols)}", flush=True)
+    # ---------- LOAD STOCK UNIVERSE ----------
+    symbols = [
+        f.stem.upper()
+        for f in DATA_DIR.glob("*.csv")
+        if f.stem.lower() not in ["nifty 50", "nifty total market"]
+    ]
 
     prices = {}
     for sym in symbols:
@@ -82,102 +115,82 @@ def main():
         if df is not None:
             prices[sym] = df["Close"]
 
-    if not prices:
-        raise RuntimeError("No price data loaded")
-
     price_df = pd.DataFrame(prices).dropna(how="all")
     universe = price_df.count(axis=1)
 
-    print(f"[INFO] Price matrix shape: {price_df.shape}", flush=True)
-
-    # ---------- PILLAR 1: ADV / DECL ----------
+    # ---------- BREADTH ----------
     returns = price_df.diff()
     adv = (returns > 0).sum(axis=1)
     dec = (returns < 0).sum(axis=1)
     ad = adv - dec
 
-    ad_df = pd.DataFrame({
-        "advances": adv,
-        "declines": dec,
-        "ad": ad
-    })
+    ad_df = pd.DataFrame({"advances": adv, "declines": dec, "ad": ad})
+    ad_df["ad_z_200"] = zscore(ad_df["ad"], 200)
 
-    for w in AD_MA_WINDOWS:
-        ad_df[f"ad_ma_{w}"] = ad_df["ad"].rolling(w).mean()
-        ad_df[f"ad_z_{w}"] = zscore(ad_df["ad"], w)
-
-    ad_df["ad_pct"] = percentile(ad_df["ad"])
-
-    # ---------- PILLAR 2: DMA BREADTH ----------
     dma_df = pd.DataFrame(index=price_df.index)
     for w in DMA_WINDOWS:
         dma = price_df.rolling(w).mean()
         above = (price_df > dma).sum(axis=1)
         dma_df[f"pct_above_{w}dma"] = above / universe * 100
 
-    # ---------- PILLAR 3: NH / NL (NORMALIZED) ----------
     highs = price_df.rolling(NHNL_LOOKBACK).max()
     lows = price_df.rolling(NHNL_LOOKBACK).min()
+    nh = (price_df >= highs).sum(axis=1)
+    nl = (price_df <= lows).sum(axis=1)
 
-    new_highs = (price_df >= highs).sum(axis=1)
-    new_lows = (price_df <= lows).sum(axis=1)
+    nh_pct = nh / universe * 100
+    nl_pct = nl / universe * 100
+    nhnl_z = zscore(nh_pct - nl_pct, 252)
 
-    nh_pct = new_highs / universe * 100
-    nl_pct = new_lows / universe * 100
+    breadth = pd.concat(
+        [ad_df, dma_df,
+         nh.rename("new_highs"),
+         nl.rename("new_lows"),
+         nh_pct.rename("nh_pct"),
+         nl_pct.rename("nl_pct"),
+         nhnl_z.rename("nhnl_z")],
+        axis=1
+    ).dropna()
 
-    nhnl_net = nh_pct - nl_pct
-    nhnl_z = zscore(nhnl_net, NHNL_LOOKBACK)
-
-    nhnl_df = pd.DataFrame({
-        "new_highs": new_highs,
-        "new_lows": new_lows,
-        "nh_pct": nh_pct,
-        "nl_pct": nl_pct,
-        "nhnl_net": nhnl_net,
-        "nhnl_z": nhnl_z
-    })
+    # ---------- TREND (NIFTY TOTAL MARKET) ----------
+    idx_df = load_index("nifty_total")
+    trend_df = compute_trend_structure(idx_df)
 
     # ---------- MERGE ----------
-    breadth = pd.concat([ad_df, dma_df, nhnl_df], axis=1).dropna()
+    breadth = breadth.join(
+        trend_df[[
+            "trend_bias",
+            "price_above_200",
+            "price_above_50",
+            "dma200_slope_pct",
+            "trend_distance_200",
+            "trend_distance_200_z",
+            "trend_persistence_200",
+            "hh_ll_ratio"
+        ]],
+        how="left"
+    )
 
-    # ---------- LABELS ----------
-    breadth["participation_label"] = breadth["ad_z_50"].apply(participation_label)
-    breadth["dma_label"] = breadth["pct_above_50dma"].apply(dma_label)
-    breadth["nhnl_label"] = breadth["nhnl_z"].apply(nhnl_label)
-
-    # ---------- OUTPUTS ----------
+    # ---------- OUTPUT ----------
     today = breadth.index[-1]
+    breadth.loc[[today]].to_csv(OUTPUT_DIR / f"breadth_{today.date()}.csv")
+    breadth.tail(LOOKBACK_DAILY).to_csv(
+        OUTPUT_DIR / f"breadth_lookback_{LOOKBACK_DAILY}.csv"
+    )
 
-    # 1️⃣ DAILY SNAPSHOT (ONE ROW ONLY)
-    daily_df = breadth.loc[[today]]
-    daily_file = OUTPUT_DIR / f"breadth_{today.date()}.csv"
-    daily_df.to_csv(daily_file)
-    print(f"[SUCCESS] Daily breadth saved → {daily_file}", flush=True)
-
-    # 2️⃣ FULL HISTORY (MONTHLY)
-    update_full = False
-    if not FULL_HISTORY_FILE.exists():
-        update_full = True
-        full = pd.DataFrame()
-        print("[INFO] Creating full history", flush=True)
-    else:
-        full = pd.read_csv(FULL_HISTORY_FILE, parse_dates=["Date"], index_col="Date")
-        if full.index.max().month != today.month:
-            update_full = True
-            print("[INFO] Month rollover detected – updating full history", flush=True)
-
-    if update_full:
-        combined = pd.concat([full, breadth])
-        combined = combined[~combined.index.duplicated(keep="last")]
-        combined.sort_index(inplace=True)
+    if not FULL_HISTORY_FILE.exists() or pd.read_csv(
+        FULL_HISTORY_FILE, parse_dates=["Date"], index_col="Date"
+    ).index.max().month != today.month:
+        combined = (
+            pd.concat([
+                pd.read_csv(FULL_HISTORY_FILE, parse_dates=["Date"], index_col="Date")
+                if FULL_HISTORY_FILE.exists() else pd.DataFrame(),
+                breadth
+            ])
+            .loc[~lambda x: x.index.duplicated(keep="last")]
+            .sort_index()
+        )
         combined.to_csv(FULL_HISTORY_FILE)
-        print(f"[SUCCESS] Full history updated → {FULL_HISTORY_FILE}", flush=True)
-
-    # 3️⃣ LOOKBACK FILE
-    lookback = breadth.tail(LOOKBACK_DAILY)
-    lookback_file = OUTPUT_DIR / f"breadth_lookback_{LOOKBACK_DAILY}.csv"
-    lookback.to_csv(lookback_file)
-    print(f"[SUCCESS] Lookback saved → {lookback_file}", flush=True)
 
 if __name__ == "__main__":
     main()
