@@ -1,54 +1,44 @@
-name: Market Breadth (IST)
+name: Market Analytics Pipeline (IST)
 
 on:
   schedule:
-    # Daily at 8:00 PM IST (14:30 UTC)
+    # Daily run at 8:00 PM IST (14:30 UTC)
     - cron: "30 14 * * *"
 
-    # Monthly (1st) at 8:00 PM IST
+    # Monthly refresh (same time)
     - cron: "30 14 1 * *"
 
   workflow_dispatch:
 
 jobs:
-  run-breadth:
+  run-market-analytics:
     runs-on: ubuntu-latest
 
     steps:
       # -----------------------------
-      # Checkout EOD2 repo
+      # Checkout source repo (eod2)
       # -----------------------------
       - name: Checkout EOD2 repo
         uses: actions/checkout@v4
         with:
-          submodules: recursive
+          fetch-depth: 0
 
       # -----------------------------
-      # Setup Python
+      # Python setup
       # -----------------------------
       - name: Setup Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
-      # -----------------------------
-      # Install dependencies
-      # -----------------------------
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
 
       # -----------------------------
-      # UPDATE EOD DATA (CRITICAL)
+      # Run analytics pipeline
       # -----------------------------
-      - name: Update NSE EOD data
-        run: |
-          python -u src/init.py
-
-      # -----------------------------
-      # Run breadth analysis
-      # -----------------------------
-      - name: Run breadth analysis
+      - name: Run market analytics
         run: |
           python -u src/breadth.py
 
@@ -63,44 +53,56 @@ jobs:
           token: ${{ secrets.MARKET_ANALYTICS_PAT }}
 
       # -----------------------------
-      # Copy outputs
+      # Copy outputs (CSV + dashboards)
       # -----------------------------
-      - name: Copy breadth outputs
+      - name: Copy analytics outputs
         run: |
-          mkdir -p MarketAnalytics/daily
-          mkdir -p MarketAnalytics/lookback
-          mkdir -p MarketAnalytics/history
+          set -e
 
-          DAILY_FILE=$(ls -t output/breadth_*.csv | grep -v lookback | grep -v full_history | head -1 || true)
+          mkdir -p MarketAnalytics/data/daily
+          mkdir -p MarketAnalytics/data/lookback
+          mkdir -p MarketAnalytics/data/history
+          mkdir -p MarketAnalytics/dashboards
 
+          # ---- DAILY CSV (latest) ----
+          DAILY_FILE=$(ls -t output/breadth_*.csv | head -1 || true)
           if [ -n "$DAILY_FILE" ]; then
-            echo "[INFO] Copying daily file: $DAILY_FILE"
-            cp "$DAILY_FILE" MarketAnalytics/daily/
-          else
-            echo "[WARN] No daily breadth file found"
+            cp "$DAILY_FILE" MarketAnalytics/data/daily/
           fi
 
-          [ -f output/breadth_lookback_260.csv ] && cp output/breadth_lookback_260.csv MarketAnalytics/lookback/
-          [ -f output/breadth_full_history.csv ] && cp output/breadth_full_history.csv MarketAnalytics/history/
+          # ---- LOOKBACK ----
+          if [ -f output/breadth_lookback_260.csv ]; then
+            cp output/breadth_lookback_260.csv MarketAnalytics/data/lookback/
+          fi
+
+          # ---- FULL HISTORY ----
+          if [ -f output/breadth_full_history.csv ]; then
+            cp output/breadth_full_history.csv MarketAnalytics/data/history/
+          fi
+
+          # ---- DASHBOARDS (PNG) ----
+          if [ -d output/dashboards ]; then
+            cp -r output/dashboards/* MarketAnalytics/dashboards/
+          fi
 
       # -----------------------------
       # Commit & push to MarketAnalytics
       # -----------------------------
       - name: Commit & push MarketAnalytics updates
         env:
-          MARKET_ANALYTICS_PAT: ${{ secrets.MARKET_ANALYTICS_PAT }}
+          PAT: ${{ secrets.MARKET_ANALYTICS_PAT }}
         run: |
           cd MarketAnalytics
 
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-          git remote set-url origin \
-            https://x-access-token:${MARKET_ANALYTICS_PAT}@github.com/achyuthunipradyumna-sudo/MarketAnalytics.git
+          # 🔑 Force PAT auth for push
+          git remote set-url origin https://x-access-token:${PAT}@github.com/achyuthunipradyumna-sudo/MarketAnalytics.git
 
           if [[ -n "$(git status --porcelain)" ]]; then
             git add .
-            git commit -m "Update market breadth data"
+            git commit -m "Automated market analytics update"
             git push origin main
           else
             echo "[INFO] No changes to commit"
