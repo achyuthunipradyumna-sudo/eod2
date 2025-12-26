@@ -4,7 +4,6 @@ import numpy as np
 from pathlib import Path
 from datetime import datetime
 
-# Silence numerical warnings
 np.seterr(divide="ignore", invalid="ignore")
 
 # ================= CONFIG =================
@@ -36,15 +35,12 @@ def percentile(series):
 
 def load_stock(filename):
     path = DATA_DIR / filename
-    if not path.exists():
-        raise FileNotFoundError(path)
-
     df = pd.read_csv(path, parse_dates=["Date"])
     df = df.sort_values("Date")[["Date", "Close"]]
     df.set_index("Date", inplace=True)
     return df
 
-# ================= TREND STRUCTURE =================
+# ================= TREND =================
 def compute_trend_structure(index_df, breadth):
     price = index_df["Close"]
     dma50 = price.rolling(50).mean()
@@ -94,7 +90,7 @@ def compute_trend_structure(index_df, breadth):
 
     return trend
 
-# ================= INDEX VOLATILITY =================
+# ================= VOLATILITY =================
 def compute_index_volatility(index_df):
     ret = np.log(index_df["Close"] / index_df["Close"].shift(1))
     vol = pd.DataFrame(index=index_df.index)
@@ -107,40 +103,24 @@ def compute_index_volatility(index_df):
 
     return vol
 
-# ================= REGIME =================
-def classify_market_regime(df, prefix):
-    trend = df[f"{prefix}_trend_bias"]
-    vol = df[f"{prefix}_vol_50_pct"]
-    ad_z = df["ad_z_50"]
-    nhnl_z = df["nhnl_z"]
+# ================= MOMENTUM =================
+def compute_index_momentum(index_df):
+    price = index_df["Close"]
 
-    regime = []
+    mom = pd.DataFrame(index=price.index)
+    mom["mom_63"] = price.pct_change(63)
+    mom["mom_126"] = price.pct_change(126)
+    mom["mom_12_1"] = price.pct_change(252) - price.pct_change(21)
 
-    for t, v, ad, nhnl in zip(trend, vol, ad_z, nhnl_z):
-        if t == "uptrend" and v < 0.3:
-            regime.append("bull_low_vol")
-        elif t == "uptrend" and v >= 0.3:
-            if ad < 0 or nhnl < 0:
-                regime.append("distribution")
-            else:
-                regime.append("bull_high_vol")
-        elif t == "downtrend" and v >= 0.3:
-            regime.append("bear_high_vol")
-        elif t == "downtrend" and v < 0.3:
-            regime.append("bear_low_vol")
-        elif t == "sideways":
-            regime.append("accumulation")
-        else:
-            regime.append("transition")
+    mom["mom_12_1_z"] = zscore(mom["mom_12_1"], 200)
+    mom["mom_12_1_pct"] = percentile(mom["mom_12_1"])
 
-    return pd.Series(regime, index=df.index)
+    return mom
 
 # ================= MAIN =================
 def main():
-    print("[INFO] Loading stock universe", flush=True)
-
     prices = {}
-    stock_vols = {20: {}, 50: {}, 200: {}}
+    stock_mom_126 = {}
 
     for f in DATA_DIR.glob("*.csv"):
         if "nifty" in f.name.lower():
@@ -148,15 +128,12 @@ def main():
 
         df = load_stock(f.name)
         prices[f.stem.upper()] = df["Close"]
-
-        ret = np.log(df["Close"] / df["Close"].shift(1))
-        for w in VOL_WINDOWS:
-            stock_vols[w][f.stem.upper()] = ret.rolling(w).std() * np.sqrt(252)
+        stock_mom_126[f.stem.upper()] = df["Close"].pct_change(126)
 
     price_df = pd.DataFrame(prices).dropna(how="all")
     universe = price_df.count(axis=1)
 
-    # ================= BREADTH =================
+    # ---------- BREADTH ----------
     ret = price_df.diff()
     adv = (ret > 0).sum(axis=1)
     dec = (ret < 0).sum(axis=1)
@@ -172,8 +149,7 @@ def main():
 
     dma_df = pd.DataFrame(index=price_df.index)
     for w in DMA_WINDOWS:
-        dma = price_df.rolling(w).mean()
-        dma_df[f"pct_above_{w}dma"] = (price_df > dma).sum(axis=1) / universe * 100
+        dma_df[f"pct_above_{w}dma"] = (price_df > price_df.rolling(w).mean()).sum(axis=1) / universe * 100
 
     highs = price_df.rolling(NHNL_LOOKBACK).max()
     lows = price_df.rolling(NHNL_LOOKBACK).min()
@@ -182,62 +158,53 @@ def main():
 
     nh_pct = nh / universe * 100
     nl_pct = nl / universe * 100
-    nhnl_net = nh_pct - nl_pct
 
-    nhnl_df = pd.DataFrame({
-        "new_highs": nh,
-        "new_lows": nl,
-        "nh_pct": nh_pct,
-        "nl_pct": nl_pct,
-        "nhnl_net": nhnl_net,
-        "nhnl_z": zscore(nhnl_net, NHNL_LOOKBACK)
-    })
+    breadth = pd.concat([
+        ad_df,
+        dma_df,
+        pd.DataFrame({
+            "new_highs": nh,
+            "new_lows": nl,
+            "nh_pct": nh_pct,
+            "nl_pct": nl_pct,
+            "nhnl_net": nh_pct - nl_pct,
+            "nhnl_z": zscore(nh_pct - nl_pct, NHNL_LOOKBACK)
+        })
+    ], axis=1).dropna()
 
-    breadth = pd.concat([ad_df, dma_df, nhnl_df], axis=1).dropna()
+    # ---------- STOCK MOMENTUM BREADTH ----------
+    mom_df = pd.DataFrame(stock_mom_126)
+    breadth["pct_stocks_pos_mom_126"] = (mom_df > 0).sum(axis=1) / universe * 100
+    breadth["median_stock_mom_126"] = mom_df.median(axis=1)
+    breadth["median_stock_mom_126_z"] = zscore(breadth["median_stock_mom_126"], 200)
 
-    # ================= STOCK VOLATILITY STRUCTURE =================
-    for w in VOL_WINDOWS:
-        vol_df = pd.DataFrame(stock_vols[w])
-        median_vol = vol_df.median(axis=1)
-
-        breadth[f"median_stock_vol_{w}"] = median_vol
-        breadth[f"median_stock_vol_{w}_z"] = zscore(median_vol, 200)
-        breadth[f"median_stock_vol_{w}_pct"] = percentile(median_vol)
-
-    # ================= INDEX TREND + VOL + REGIME =================
+    # ---------- INDEX LAYERS ----------
     for name, file in INDEX_FILES.items():
-        idx_df = load_stock(file)
+        idx = load_stock(file)
 
-        trend = compute_trend_structure(idx_df, breadth)
-        trend.columns = [f"{name}_{c}" for c in trend.columns]
+        trend = compute_trend_structure(idx, breadth).add_prefix(f"{name}_")
+        vol = compute_index_volatility(idx).add_prefix(f"{name}_")
+        mom = compute_index_momentum(idx).add_prefix(f"{name}_")
 
-        vol = compute_index_volatility(idx_df)
-        vol.columns = [f"{name}_{c}" for c in vol.columns]
+        breadth = breadth.join(trend).join(vol).join(mom)
 
-        breadth = breadth.join(trend)
-        breadth = breadth.join(vol)
-
-        breadth[f"{name}_market_regime"] = classify_market_regime(breadth, name)
-
-    # ================= OUTPUT =================
+    # ---------- OUTPUT ----------
     today = breadth.index[-1]
     breadth.loc[[today]].to_csv(OUTPUT_DIR / f"breadth_{today.date()}.csv")
 
     if FULL_HISTORY_FILE.exists():
         full = pd.read_csv(FULL_HISTORY_FILE, parse_dates=["Date"], index_col="Date")
-        combined = pd.concat([full, breadth])
-    else:
-        combined = breadth.copy()
+        breadth = pd.concat([full, breadth])
 
-    combined = combined[~combined.index.duplicated(keep="last")]
-    combined.sort_index(inplace=True)
-    combined.to_csv(FULL_HISTORY_FILE)
+    breadth = breadth[~breadth.index.duplicated(keep="last")]
+    breadth.sort_index(inplace=True)
+    breadth.to_csv(FULL_HISTORY_FILE)
 
     breadth.tail(LOOKBACK_DAILY).to_csv(
         OUTPUT_DIR / f"breadth_lookback_{LOOKBACK_DAILY}.csv"
     )
 
-    print("[SUCCESS] Breadth + Trend + Volatility + Regime + Stock Vol computed", flush=True)
+    print("[SUCCESS] Breadth + Trend + Volatility + Momentum computed", flush=True)
 
 if __name__ == "__main__":
     main()
