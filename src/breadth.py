@@ -4,7 +4,7 @@ import numpy as np
 from pathlib import Path
 from datetime import datetime
 
-# Silence numerical warnings from log/rolling ops
+# Silence numerical warnings
 np.seterr(divide="ignore", invalid="ignore")
 
 # ================= CONFIG =================
@@ -52,7 +52,7 @@ def compute_trend_structure(index_df, breadth):
 
     trend = pd.DataFrame(index=price.index)
 
-    # ----- A. Direction -----
+    # ----- Direction -----
     trend["price_above_50"] = (price > dma50).astype(int)
     trend["price_above_200"] = (price > dma200).astype(int)
     trend["dma200_slope_pct"] = dma200.pct_change(20) * 100
@@ -67,7 +67,7 @@ def compute_trend_structure(index_df, breadth):
         )
     )
 
-    # ----- B. Strength -----
+    # ----- Strength -----
     dist_200 = (price / dma200 - 1)
     trend["dist_200_z"] = zscore(dist_200, 200)
 
@@ -81,7 +81,7 @@ def compute_trend_structure(index_df, breadth):
         hh.rolling(100).sum() - ll.rolling(100).sum()
     )
 
-    # ----- C. Integrity -----
+    # ----- Integrity -----
     trend["ad_divergence"] = (
         (price.diff(50) > 0) &
         (breadth["ad"].diff(50) < 0)
@@ -102,7 +102,6 @@ def compute_trend_structure(index_df, breadth):
 # ================= VOLATILITY =================
 def compute_index_volatility(index_df):
     ret = np.log(index_df["Close"] / index_df["Close"].shift(1))
-
     vol = pd.DataFrame(index=index_df.index)
 
     for w in VOL_WINDOWS:
@@ -112,6 +111,35 @@ def compute_index_volatility(index_df):
         vol[f"vol_{w}_pct"] = percentile(rv)
 
     return vol
+
+# ================= REGIME CLASSIFICATION =================
+def classify_market_regime(df, prefix):
+    trend = df[f"{prefix}_trend_bias"]
+    vol = df[f"{prefix}_vol_50_pct"]
+    ad_z = df["ad_z_50"]
+    nhnl_z = df["nhnl_z"]
+    dma200 = df["pct_above_200dma"]
+
+    regime = []
+
+    for t, v, ad, nhnl, dma in zip(trend, vol, ad_z, nhnl_z, dma200):
+        if t == "uptrend" and v < 0.3:
+            regime.append("bull_low_vol")
+        elif t == "uptrend" and v >= 0.3:
+            if ad < 0 or nhnl < 0:
+                regime.append("distribution")
+            else:
+                regime.append("bull_high_vol")
+        elif t == "downtrend" and v >= 0.3:
+            regime.append("bear_high_vol")
+        elif t == "downtrend" and v < 0.3:
+            regime.append("bear_low_vol")
+        elif t == "sideways" and dma < 40:
+            regime.append("accumulation")
+        else:
+            regime.append("transition")
+
+    return pd.Series(regime, index=df.index)
 
 # ================= MAIN =================
 def main():
@@ -179,7 +207,7 @@ def main():
         (vol_df > vol_median).sum(axis=1) / universe * 100
     )
 
-    # ================= INDEX TREND + VOL =================
+    # ================= INDEX TREND + VOL + REGIME =================
     for name, file in INDEX_FILES.items():
         idx_df = load_stock(file)
 
@@ -191,6 +219,8 @@ def main():
 
         breadth = breadth.join(trend, how="left")
         breadth = breadth.join(vol, how="left")
+
+        breadth[f"{name}_market_regime"] = classify_market_regime(breadth, name)
 
     # ================= OUTPUT =================
     today = breadth.index[-1]
@@ -210,7 +240,7 @@ def main():
         OUTPUT_DIR / f"breadth_lookback_{LOOKBACK_DAILY}.csv"
     )
 
-    print("[SUCCESS] Breadth + Trend + Volatility computed", flush=True)
+    print("[SUCCESS] Breadth + Trend + Volatility + Regime computed", flush=True)
 
 if __name__ == "__main__":
     main()
