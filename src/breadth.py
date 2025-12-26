@@ -4,6 +4,9 @@ import numpy as np
 from pathlib import Path
 from datetime import datetime
 
+# Silence numerical warnings from log/rolling ops
+np.seterr(divide="ignore", invalid="ignore")
+
 # ================= CONFIG =================
 DATA_DIR = Path("src/eod2_data/daily")
 OUTPUT_DIR = Path("output")
