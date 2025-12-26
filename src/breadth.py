@@ -52,7 +52,6 @@ def compute_trend_structure(index_df, breadth):
 
     trend = pd.DataFrame(index=price.index)
 
-    # ----- Direction -----
     trend["price_above_50"] = (price > dma50).astype(int)
     trend["price_above_200"] = (price > dma200).astype(int)
     trend["dma200_slope_pct"] = dma200.pct_change(20) * 100
@@ -67,7 +66,6 @@ def compute_trend_structure(index_df, breadth):
         )
     )
 
-    # ----- Strength -----
     dist_200 = (price / dma200 - 1)
     trend["dist_200_z"] = zscore(dist_200, 200)
 
@@ -77,11 +75,8 @@ def compute_trend_structure(index_df, breadth):
 
     hh = price > price.rolling(50).max().shift(1)
     ll = price < price.rolling(50).min().shift(1)
-    trend["hh_ll_ratio"] = (
-        hh.rolling(100).sum() - ll.rolling(100).sum()
-    )
+    trend["hh_ll_ratio"] = hh.rolling(100).sum() - ll.rolling(100).sum()
 
-    # ----- Integrity -----
     trend["ad_divergence"] = (
         (price.diff(50) > 0) &
         (breadth["ad"].diff(50) < 0)
@@ -99,7 +94,7 @@ def compute_trend_structure(index_df, breadth):
 
     return trend
 
-# ================= VOLATILITY =================
+# ================= INDEX VOLATILITY =================
 def compute_index_volatility(index_df):
     ret = np.log(index_df["Close"] / index_df["Close"].shift(1))
     vol = pd.DataFrame(index=index_df.index)
@@ -112,17 +107,16 @@ def compute_index_volatility(index_df):
 
     return vol
 
-# ================= REGIME CLASSIFICATION =================
+# ================= REGIME =================
 def classify_market_regime(df, prefix):
     trend = df[f"{prefix}_trend_bias"]
     vol = df[f"{prefix}_vol_50_pct"]
     ad_z = df["ad_z_50"]
     nhnl_z = df["nhnl_z"]
-    dma200 = df["pct_above_200dma"]
 
     regime = []
 
-    for t, v, ad, nhnl, dma in zip(trend, vol, ad_z, nhnl_z, dma200):
+    for t, v, ad, nhnl in zip(trend, vol, ad_z, nhnl_z):
         if t == "uptrend" and v < 0.3:
             regime.append("bull_low_vol")
         elif t == "uptrend" and v >= 0.3:
@@ -134,7 +128,7 @@ def classify_market_regime(df, prefix):
             regime.append("bear_high_vol")
         elif t == "downtrend" and v < 0.3:
             regime.append("bear_low_vol")
-        elif t == "sideways" and dma < 40:
+        elif t == "sideways":
             regime.append("accumulation")
         else:
             regime.append("transition")
@@ -146,7 +140,7 @@ def main():
     print("[INFO] Loading stock universe", flush=True)
 
     prices = {}
-    vols_20 = {}
+    stock_vols = {20: {}, 50: {}, 200: {}}
 
     for f in DATA_DIR.glob("*.csv"):
         if "nifty" in f.name.lower():
@@ -156,7 +150,8 @@ def main():
         prices[f.stem.upper()] = df["Close"]
 
         ret = np.log(df["Close"] / df["Close"].shift(1))
-        vols_20[f.stem.upper()] = ret.rolling(20).std() * np.sqrt(252)
+        for w in VOL_WINDOWS:
+            stock_vols[w][f.stem.upper()] = ret.rolling(w).std() * np.sqrt(252)
 
     price_df = pd.DataFrame(prices).dropna(how="all")
     universe = price_df.count(axis=1)
@@ -200,12 +195,14 @@ def main():
 
     breadth = pd.concat([ad_df, dma_df, nhnl_df], axis=1).dropna()
 
-    # ================= VOLATILITY BREADTH =================
-    vol_df = pd.DataFrame(vols_20)
-    vol_median = vol_df.rolling(252).median()
-    breadth["pct_high_volatility"] = (
-        (vol_df > vol_median).sum(axis=1) / universe * 100
-    )
+    # ================= STOCK VOLATILITY STRUCTURE =================
+    for w in VOL_WINDOWS:
+        vol_df = pd.DataFrame(stock_vols[w])
+        median_vol = vol_df.median(axis=1)
+
+        breadth[f"median_stock_vol_{w}"] = median_vol
+        breadth[f"median_stock_vol_{w}_z"] = zscore(median_vol, 200)
+        breadth[f"median_stock_vol_{w}_pct"] = percentile(median_vol)
 
     # ================= INDEX TREND + VOL + REGIME =================
     for name, file in INDEX_FILES.items():
@@ -217,8 +214,8 @@ def main():
         vol = compute_index_volatility(idx_df)
         vol.columns = [f"{name}_{c}" for c in vol.columns]
 
-        breadth = breadth.join(trend, how="left")
-        breadth = breadth.join(vol, how="left")
+        breadth = breadth.join(trend)
+        breadth = breadth.join(vol)
 
         breadth[f"{name}_market_regime"] = classify_market_regime(breadth, name)
 
@@ -240,7 +237,7 @@ def main():
         OUTPUT_DIR / f"breadth_lookback_{LOOKBACK_DAILY}.csv"
     )
 
-    print("[SUCCESS] Breadth + Trend + Volatility + Regime computed", flush=True)
+    print("[SUCCESS] Breadth + Trend + Volatility + Regime + Stock Vol computed", flush=True)
 
 if __name__ == "__main__":
     main()
