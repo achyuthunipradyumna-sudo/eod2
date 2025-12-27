@@ -1,19 +1,24 @@
 <!DOCTYPE html>
 <html>
 <head>
-<meta charset="utf-8">
-<title>Market Regime Dashboard</title>
-<script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
-<style>
-body {
-  font-family: Arial, sans-serif;
-  margin: 20px;
-}
-select {
-  padding: 6px;
-  margin-right: 12px;
-}
-</style>
+  <meta charset="utf-8">
+  <title>Market Regime Dashboard</title>
+  <script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 20px;
+    }
+    select, button {
+      padding: 6px;
+      margin-right: 12px;
+      font-size: 14px;
+    }
+    #chart {
+      width: 100%;
+      height: 1000px;
+    }
+  </style>
 </head>
 
 <body>
@@ -37,120 +42,131 @@ select {
   <option value="all">Entire History</option>
 </select>
 
-<div id="chart" style="width:100%; height:950px;"></div>
+<label>View:</label>
+<select id="modeSelector">
+  <option value="z">Z-Score</option>
+  <option value="raw">Raw</option>
+</select>
+
+<div id="chart"></div>
 
 <script>
-let rawData = [];
+let rawData;
 
 fetch("breadth_full_history.csv")
-.then(r => r.text())
-.then(text => {
-  const rows = text.trim().split("\n");
-  const header = rows[0].split(",");
-  rawData = rows.slice(1).map(r => {
-    const v = r.split(",");
-    let o = {};
-    header.forEach((h, i) => o[h] = +v[i] || v[i]);
-    return o;
+  .then(r => r.text())
+  .then(text => {
+    const rows = text.trim().split("\n");
+    const header = rows[0].split(",");
+    rawData = rows.slice(1).map(r => {
+      const v = r.split(",");
+      let o = {};
+      header.forEach((h, i) => o[h] = v[i]);
+      return o;
+    });
+    render();
   });
-  render();
-});
 
 function sliceData(days) {
   if (days === "all") return rawData;
-  return rawData.slice(-days);
+  return rawData.slice(-parseInt(days));
 }
 
 function render() {
-  const idx = indexSelector.value;
-  const range = rangeSelector.value;
-  const data = sliceData(range);
+  const idx = document.getElementById("indexSelector").value;
+  const range = document.getElementById("rangeSelector").value;
+  const mode = document.getElementById("modeSelector").value;
 
+  const data = sliceData(range);
   const x = data.map(d => new Date(d.Date));
+
+  const breadthY = mode === "z" ? "ad_z_50" : "pct_above_50dma";
+  const nhnlY   = mode === "z" ? "nhnl_z" : "nhnl_raw";
+
+  const trendY  = mode === "z"
+      ? `${idx}_dist_200_z`
+      : `${idx}_persistence_200`;
+
+  const momY = `${idx}_mom_126`;
+
+  const volIdxY = mode === "z"
+      ? `${idx}_vol_20_z`
+      : `${idx}_vol_20`;
+
+  const volStockY = mode === "z"
+      ? "median_stock_vol_20_z"
+      : "median_stock_vol_20";
 
   const traces = [
 
-    /* ================= PANEL 1 — BREADTH ================= */
+    /* PANEL 1 — BREADTH */
     {
-      x, y: data.map(d => d.ad_z_50),
-      name: "AD Z(50)",
-      yaxis: "y",
+      x, y: data.map(d => +d[breadthY]),
+      name: "Advance-Decline / Participation",
+      xaxis: "x",
+      yaxis: "y1",
       line: {color: "#1f77b4"}
     },
     {
-      x, y: data.map(d => d.pct_above_50dma_z),
-      name: "% > 50DMA Z",
-      yaxis: "y",
-      line: {color: "#2ca02c"}
-    },
-    {
-      x, y: data.map(d => d.nhnl_z),
-      name: "NH-NL Z",
-      yaxis: "y",
+      x, y: data.map(d => +d[nhnlY]),
+      name: "NH-NL",
+      xaxis: "x",
+      yaxis: "y1",
       line: {color: "#9467bd"}
     },
 
-    /* ================= PANEL 2 — TREND ================= */
+    /* PANEL 2 — TREND */
     {
-      x, y: data.map(d => d[`${idx}_dist_200_z`]),
-      name: "Dist from 200DMA (Z)",
+      x, y: data.map(d => +d[trendY]),
+      name: "Trend Strength",
+      xaxis: "x",
       yaxis: "y2",
       line: {color: "#ff7f0e"}
     },
     {
-      x, y: data.map(d => d[`${idx}_mom_126`]),
+      x, y: data.map(d => +d[momY]),
       name: "6M Momentum",
+      xaxis: "x",
       yaxis: "y2",
-      line: {color: "#d62728"}
+      line: {color: "#d62728", dash: "dot"}
     },
 
-    /* ================= PANEL 3 — VOLATILITY ================= */
+    /* PANEL 3 — VOLATILITY */
     {
-      x, y: data.map(d => d[`${idx}_vol_20_z`]),
-      name: "Index Vol Z(20)",
+      x, y: data.map(d => +d[volIdxY]),
+      name: "Index Volatility",
+      xaxis: "x",
       yaxis: "y3",
       line: {color: "#8c564b"}
     },
     {
-      x, y: data.map(d => d.median_stock_vol_20_z),
-      name: "Median Stock Vol Z",
+      x, y: data.map(d => +d[volStockY]),
+      name: "Stock Volatility Breadth",
+      xaxis: "x",
       yaxis: "y3",
-      line: {color: "#000000", dash: "dot"}
+      line: {color: "#000000"}
     }
   ];
 
   const layout = {
+    grid: {rows: 3, columns: 1, pattern: "independent"},
+    height: 1000,
     hovermode: "x unified",
 
-    grid: {rows: 3, columns: 1, pattern: "independent"},
-
-    yaxis: {
-      title: "Breadth",
-      domain: [0.67, 1.0],
-      zeroline: true
-    },
-
-    yaxis2: {
-      title: "Trend & Momentum",
-      domain: [0.34, 0.66],
-      zeroline: true
-    },
-
-    yaxis3: {
-      title: "Volatility",
-      domain: [0.0, 0.33],
-      zeroline: true
-    },
+    yaxis:  {title: "Breadth", zeroline: true},
+    yaxis2: {title: "Trend / Momentum", zeroline: true},
+    yaxis3: {title: "Volatility", zeroline: true},
 
     legend: {orientation: "h"},
     margin: {t: 40}
   };
 
-  Plotly.newPlot("chart", traces, layout, {responsive: true});
+  Plotly.newPlot("chart", traces, layout);
 }
 
-indexSelector.onchange = render;
-rangeSelector.onchange = render;
+document.getElementById("indexSelector").onchange = render;
+document.getElementById("rangeSelector").onchange = render;
+document.getElementById("modeSelector").onchange = render;
 </script>
 
 </body>
