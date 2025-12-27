@@ -21,6 +21,7 @@ jobs:
       - name: Checkout EOD2 repo
         uses: actions/checkout@v4
         with:
+          submodules: recursive      # 🔑 CRITICAL
           fetch-depth: 0
 
       # -----------------------------
@@ -34,6 +35,13 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
+
+      # -----------------------------
+      # UPDATE EOD DATA (CRITICAL)
+      # -----------------------------
+      - name: Update NSE EOD data
+        run: |
+          python -u src/init.py
 
       # -----------------------------
       # Run analytics pipeline
@@ -81,8 +89,8 @@ jobs:
           fi
 
           # ---- DASHBOARDS (PNG) ----
-          if [ -d output/dashboards ]; then
-            cp -r output/dashboards/* MarketAnalytics/dashboards/
+          if [ -d output ]; then
+            cp output/*_dashboard.png MarketAnalytics/dashboards/ || true
           fi
 
       # -----------------------------
