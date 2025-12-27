@@ -19,9 +19,10 @@ LOOKBACK_DAILY = 260
 
 FULL_HISTORY_FILE = OUTPUT_DIR / "breadth_full_history.csv"
 
-INDEX_FILES = {
-    "nifty50": "nifty 50.csv",
-    "nifty_total": "nifty total market.csv"
+# 🔑 Use patterns, not filenames
+INDEX_PATTERNS = {
+    "nifty50": ["nifty 50.csv"],
+    "nifty_total": ["nifty total market.csv"]
 }
 
 # ================= HELPERS =================
@@ -31,12 +32,25 @@ def zscore(series, window):
 def percentile(series):
     return series.rank(pct=True)
 
-def load_stock(filename):
-    path = DATA_DIR / filename
+def resolve_index_file(patterns):
+    matches = []
+    for p in patterns:
+        matches.extend(DATA_DIR.glob(p))
 
-    if not path.exists():
-        raise FileNotFoundError(f"[ERROR] Missing file: {path}")
+    if len(matches) == 0:
+        raise FileNotFoundError(
+            f"[ERROR] No index file found for patterns: {patterns}"
+        )
 
+    if len(matches) > 1:
+        raise RuntimeError(
+            f"[ERROR] Multiple index files matched {patterns}: "
+            f"{[m.name for m in matches]}"
+        )
+
+    return matches[0]
+
+def load_stock_by_path(path: Path):
     df = pd.read_csv(path, parse_dates=["Date"])
     df = df.sort_values("Date")[["Date", "Close"]]
     df.set_index("Date", inplace=True)
@@ -49,6 +63,7 @@ def compute_trend_structure(index_df, breadth):
     dma200 = price.rolling(200).mean()
 
     trend = pd.DataFrame(index=price.index)
+
     trend["price_above_50"] = (price > dma50).astype(int)
     trend["price_above_200"] = (price > dma200).astype(int)
     trend["dma200_slope_pct"] = dma200.pct_change(20) * 100
@@ -89,31 +104,24 @@ def compute_index_momentum(index_df):
     mom["mom_63"] = price.pct_change(63)
     mom["mom_126"] = price.pct_change(126)
     mom["mom_12_1"] = price.pct_change(252) - price.pct_change(21)
-
     mom["mom_12_1_z"] = zscore(mom["mom_12_1"], 200)
+
     return mom
 
-# ================= DASHBOARD PLOTS =================
+# ================= DASHBOARD =================
 def plot_dashboard(df, name):
     fig, axes = plt.subplots(3, 1, figsize=(14, 10), sharex=True)
 
-    # SHORT TERM
-    axes[0].plot(df.index, df["ad_z_50"], label="AD Z (50)")
-    axes[0].plot(df.index, df["pct_above_20dma"], label="% >20DMA")
-    axes[0].set_title("Short-Term: Breadth & Participation")
-    axes[0].legend()
+    axes[0].plot(df.index, df["ad_z_50"])
+    axes[0].set_title("Short-term Breadth")
 
-    # MEDIUM TERM
-    axes[1].plot(df.index, df["pct_above_200dma"], label="% >200DMA")
-    axes[1].plot(df.index, df[f"{name}_mom_126"], label="6M Momentum")
-    axes[1].set_title("Medium-Term: Trend & Momentum")
-    axes[1].legend()
+    axes[1].plot(df.index, df["pct_above_200dma"])
+    axes[1].plot(df.index, df[f"{name}_mom_126"])
+    axes[1].set_title("Medium-term Trend & Momentum")
 
-    # LONG TERM
-    axes[2].plot(df.index, df["nhnl_z"], label="NH-NL Z")
-    axes[2].plot(df.index, df[f"{name}_mom_12_1_z"], label="12-1 Momentum Z")
-    axes[2].set_title("Long-Term: Structural Momentum")
-    axes[2].legend()
+    axes[2].plot(df.index, df["nhnl_z"])
+    axes[2].plot(df.index, df[f"{name}_mom_12_1_z"])
+    axes[2].set_title("Long-term Structure")
 
     plt.tight_layout()
     plt.savefig(OUTPUT_DIR / f"{name}_dashboard.png")
@@ -126,12 +134,11 @@ def main():
     for f in DATA_DIR.glob("*.csv"):
         if "nifty" in f.name.lower():
             continue
-        prices[f.stem] = load_stock(f.name)["Close"]
+        prices[f.stem] = load_stock_by_path(f)["Close"]
 
     price_df = pd.DataFrame(prices)
     universe = price_df.count(axis=1)
 
-    # -------- BREADTH --------
     ret = price_df.diff()
     ad = (ret > 0).sum(axis=1) - (ret < 0).sum(axis=1)
 
@@ -139,15 +146,21 @@ def main():
     breadth["ad_z_50"] = zscore(ad, 50)
 
     for w in DMA_WINDOWS:
-        breadth[f"pct_above_{w}dma"] = (price_df > price_df.rolling(w).mean()).mean(axis=1) * 100
+        breadth[f"pct_above_{w}dma"] = (
+            (price_df > price_df.rolling(w).mean()).mean(axis=1) * 100
+        )
 
     highs = price_df.rolling(NHNL_LOOKBACK).max()
     lows = price_df.rolling(NHNL_LOOKBACK).min()
-    breadth["nhnl_z"] = zscore((price_df >= highs).sum(axis=1) - (price_df <= lows).sum(axis=1), NHNL_LOOKBACK)
+    breadth["nhnl_z"] = zscore(
+        (price_df >= highs).sum(axis=1) - (price_df <= lows).sum(axis=1),
+        NHNL_LOOKBACK
+    )
 
-    # -------- INDEX LAYERS --------
-    for name, file in INDEX_FILES.items():
-        idx = load_stock(file)
+    # ----- INDEX LAYERS -----
+    for name, patterns in INDEX_PATTERNS.items():
+        idx_path = resolve_index_file(patterns)
+        idx = load_stock_by_path(idx_path)
 
         breadth = breadth.join(compute_trend_structure(idx, breadth).add_prefix(f"{name}_"))
         breadth = breadth.join(compute_index_volatility(idx).add_prefix(f"{name}_"))
@@ -155,7 +168,7 @@ def main():
 
         plot_dashboard(breadth.tail(LOOKBACK_DAILY), name)
 
-    # -------- OUTPUT --------
+    # ----- OUTPUT -----
     today = breadth.index[-1]
     breadth.loc[[today]].to_csv(OUTPUT_DIR / f"breadth_{today.date()}.csv")
 
@@ -167,7 +180,7 @@ def main():
     breadth.sort_index(inplace=True)
     breadth.to_csv(FULL_HISTORY_FILE)
 
-    print("[SUCCESS] Breadth + Trend + Volatility + Momentum + Dashboards generated")
+    print("[SUCCESS] Fixed index resolution + dashboards generated")
 
 if __name__ == "__main__":
     main()
