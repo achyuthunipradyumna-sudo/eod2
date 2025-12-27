@@ -1,15 +1,17 @@
 from pathlib import Path
 import shutil
 
-BASE_DIR = Path(__file__).resolve().parent
-OUTPUT_DIR = BASE_DIR / "output"
+BASE = Path(__file__).resolve().parent
+OUT = BASE / "output"
 
-template = BASE_DIR / "dashboard.html.template"
-target = OUTPUT_DIR / "dashboard.html"
+templates = {
+    "breadth": "breadth.html.template",
+    "trend": "trend.html.template",
+    "volatility": "volatility.html.template",
+}
 
-csv = OUTPUT_DIR / "breadth_full_history.csv"
-if not csv.exists():
-    raise FileNotFoundError("breadth_full_history.csv not found in output/")
-
-shutil.copy(template, target)
-print(f"[INFO] HTML dashboard generated → {target}")
+for name, tpl in templates.items():
+    src = BASE / tpl
+    dst = OUT / f"{name}.html"
+    shutil.copy(src, dst)
+    print(f"[OK] Generated {dst.name}")
