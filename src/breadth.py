@@ -3,7 +3,6 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 import matplotlib.pyplot as plt
-import re
 
 np.seterr(divide="ignore", invalid="ignore")
 
@@ -37,9 +36,9 @@ def percentile(series):
 def resolve_index_file(index_name: str) -> Path:
     """
     Strict resolver:
-    - exact match on filename (minus .csv)
+    - exact filename match (minus .csv)
     - avoids 'nifty 50' matching 'nifty 500'
-    - ignores futures / arbitrage / tr variants
+    - ignores futures / arbitrage / tr
     """
     index_name = index_name.lower().strip()
     matches = []
@@ -50,11 +49,9 @@ def resolve_index_file(index_name: str) -> Path:
 
         name = f.name.lower().replace(".csv", "").strip()
 
-        # reject derivatives / variants
         if any(x in name for x in ["futures", "arbitrage", "tr"]):
             continue
 
-        # exact match only
         if name == index_name:
             matches.append(f)
 
@@ -144,8 +141,11 @@ def plot_dashboard(df, name):
     axes[2].set_title("Long-Term Structural Momentum")
 
     plt.tight_layout()
-    plt.savefig(OUTPUT_DIR / f"{name}_dashboard.png")
+    out = OUTPUT_DIR / f"{name}_dashboard.png"
+    plt.savefig(out)
     plt.close()
+
+    print(f"[INFO] Dashboard saved → {out}")
 
 # ================= MAIN =================
 def main():
@@ -185,6 +185,8 @@ def main():
     # ---------- INDEX LAYERS ----------
     for name, key in INDEX_KEYS.items():
         idx_path = resolve_index_file(key)
+        print(f"[INFO] Using index file → {idx_path.name}")
+
         idx = load_stock_by_path(idx_path)
 
         breadth = breadth.join(
@@ -199,9 +201,10 @@ def main():
 
         plot_dashboard(breadth.tail(LOOKBACK_DAILY), name)
 
-    # ---------- OUTPUT ----------
+    # ---------- OUTPUT CSVs ----------
     today = breadth.index[-1]
-    breadth.loc[[today]].to_csv(OUTPUT_DIR / f"breadth_{today.date()}.csv")
+    daily_file = OUTPUT_DIR / f"breadth_{today.date()}.csv"
+    breadth.loc[[today]].to_csv(daily_file)
 
     if FULL_HISTORY_FILE.exists():
         full = pd.read_csv(FULL_HISTORY_FILE, parse_dates=["Date"], index_col="Date")
@@ -211,7 +214,13 @@ def main():
     breadth.sort_index(inplace=True)
     breadth.to_csv(FULL_HISTORY_FILE)
 
-    print("[SUCCESS] Exact index resolution + dashboards generated")
+    # ---------- FINAL FILE LISTING ----------
+    print("\n========== GENERATED OUTPUT FILES ==========")
+    for f in sorted(OUTPUT_DIR.glob("*")):
+        print(f" - {f.name}")
+    print("===========================================\n")
+
+    print("[SUCCESS] Pipeline completed successfully")
 
 if __name__ == "__main__":
     main()
