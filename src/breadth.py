@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 import matplotlib.pyplot as plt
+import re
 
 np.seterr(divide="ignore", invalid="ignore")
 
@@ -20,10 +21,10 @@ LOOKBACK_DAILY = 260
 
 FULL_HISTORY_FILE = OUTPUT_DIR / "breadth_full_history.csv"
 
-# 🔑 logical identifiers → resolved dynamically
+# Logical identifiers → exact index names
 INDEX_KEYS = {
     "nifty50": "nifty 50",
-    "nifty_total": "nifty total market"
+    "nifty_total": "nifty total market",
 }
 
 # ================= HELPERS =================
@@ -33,40 +34,42 @@ def zscore(series, window):
 def percentile(series):
     return series.rank(pct=True)
 
-def resolve_index_file(index_key: str) -> Path:
+def resolve_index_file(index_name: str) -> Path:
     """
-    Robust resolver:
-    - scans directory once
-    - lowercases
-    - ignores futures / arbitrage / tr
-    - enforces exactly one match
+    Strict resolver:
+    - exact match on filename (minus .csv)
+    - avoids 'nifty 50' matching 'nifty 500'
+    - ignores futures / arbitrage / tr variants
     """
-    key = index_key.lower()
-    candidates = []
+    index_name = index_name.lower().strip()
+    matches = []
 
     for f in DATA_DIR.iterdir():
         if not f.name.lower().endswith(".csv"):
             continue
 
-        name = f.name.lower()
+        name = f.name.lower().replace(".csv", "").strip()
 
-        if key in name:
-            if any(x in name for x in ["futures", "arbitrage", "tr"]):
-                continue
-            candidates.append(f)
+        # reject derivatives / variants
+        if any(x in name for x in ["futures", "arbitrage", "tr"]):
+            continue
 
-    if len(candidates) == 0:
+        # exact match only
+        if name == index_name:
+            matches.append(f)
+
+    if len(matches) == 0:
         raise FileNotFoundError(
-            f"[ERROR] No index file found for key='{index_key}' in {DATA_DIR}"
+            f"[ERROR] No exact index file found for '{index_name}.csv' in {DATA_DIR}"
         )
 
-    if len(candidates) > 1:
+    if len(matches) > 1:
         raise RuntimeError(
-            f"[ERROR] Ambiguous index files for key='{index_key}': "
-            f"{[c.name for c in candidates]}"
+            f"[ERROR] Multiple exact matches for '{index_name}': "
+            f"{[m.name for m in matches]}"
         )
 
-    return candidates[0]
+    return matches[0]
 
 def load_stock_by_path(path: Path):
     df = pd.read_csv(path, parse_dates=["Date"])
@@ -81,7 +84,6 @@ def compute_trend_structure(index_df, breadth):
     dma200 = price.rolling(200).mean()
 
     trend = pd.DataFrame(index=price.index)
-
     trend["price_above_50"] = (price > dma50).astype(int)
     trend["price_above_200"] = (price > dma200).astype(int)
     trend["dma200_slope_pct"] = dma200.pct_change(20) * 100
@@ -92,8 +94,8 @@ def compute_trend_structure(index_df, breadth):
         np.where(
             (trend["price_above_200"] == 0) & (trend["dma200_slope_pct"] < 0),
             "downtrend",
-            "sideways"
-        )
+            "sideways",
+        ),
     )
 
     dist_200 = price / dma200 - 1
@@ -131,15 +133,15 @@ def plot_dashboard(df, name):
     fig, axes = plt.subplots(3, 1, figsize=(14, 10), sharex=True)
 
     axes[0].plot(df.index, df["ad_z_50"])
-    axes[0].set_title("Short-term Breadth")
+    axes[0].set_title("Short-Term Breadth")
 
     axes[1].plot(df.index, df["pct_above_200dma"])
     axes[1].plot(df.index, df[f"{name}_mom_126"])
-    axes[1].set_title("Medium-term Trend & Momentum")
+    axes[1].set_title("Medium-Term Trend & Momentum")
 
     axes[2].plot(df.index, df["nhnl_z"])
     axes[2].plot(df.index, df[f"{name}_mom_12_1_z"])
-    axes[2].set_title("Long-term Structure")
+    axes[2].set_title("Long-Term Structural Momentum")
 
     plt.tight_layout()
     plt.savefig(OUTPUT_DIR / f"{name}_dashboard.png")
@@ -149,7 +151,7 @@ def plot_dashboard(df, name):
 def main():
     prices = {}
 
-    # ---------- LOAD STOCK UNIVERSE ----------
+    # ---------- STOCK UNIVERSE ----------
     for f in DATA_DIR.iterdir():
         if not f.name.lower().endswith(".csv"):
             continue
@@ -175,10 +177,9 @@ def main():
 
     highs = price_df.rolling(NHNL_LOOKBACK).max()
     lows = price_df.rolling(NHNL_LOOKBACK).min()
-
     breadth["nhnl_z"] = zscore(
         (price_df >= highs).sum(axis=1) - (price_df <= lows).sum(axis=1),
-        NHNL_LOOKBACK
+        NHNL_LOOKBACK,
     )
 
     # ---------- INDEX LAYERS ----------
@@ -210,7 +211,7 @@ def main():
     breadth.sort_index(inplace=True)
     breadth.to_csv(FULL_HISTORY_FILE)
 
-    print("[SUCCESS] Index resolution fixed + dashboards generated")
+    print("[SUCCESS] Exact index resolution + dashboards generated")
 
 if __name__ == "__main__":
     main()
