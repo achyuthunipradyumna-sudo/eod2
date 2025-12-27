@@ -2,7 +2,7 @@ import os
 import pandas as pd
 import numpy as np
 from pathlib import Path
-import matplotlib.pyplot as plt
+from datetime import datetime
 
 np.seterr(divide="ignore", invalid="ignore")
 
@@ -65,7 +65,6 @@ def compute_trend_structure(index_df):
     trend["price_above_50"] = (price > dma50).astype(int)
     trend["price_above_200"] = (price > dma200).astype(int)
     trend["dma200_slope_pct"] = dma200.pct_change(20) * 100
-
     trend["dist_200_z"] = zscore(price / dma200 - 1, 200)
     trend["persistence_200"] = (price > dma200).rolling(250).mean() * 100
 
@@ -152,20 +151,37 @@ def main():
         breadth = breadth.join(compute_index_volatility(idx).add_prefix(f"{name}_"))
         breadth = breadth.join(compute_index_momentum(idx).add_prefix(f"{name}_"))
 
-    # ---------- OUTPUT ----------
+    # ---------- OUTPUT FILES ----------
     today = breadth.index[-1]
-    breadth.loc[[today]].to_csv(OUTPUT_DIR / f"breadth_{today.date()}.csv")
+    today_str = today.date()
+
+    # 1️⃣ Daily snapshot
+    daily_file = OUTPUT_DIR / f"breadth_{today_str}.csv"
+    breadth.loc[[today]].to_csv(daily_file)
+
+    # 2️⃣ Rolling lookback
     breadth.tail(LOOKBACK_DAILY).to_csv(LOOKBACK_FILE)
 
-    if FULL_HISTORY_FILE.exists():
-        full = pd.read_csv(FULL_HISTORY_FILE, parse_dates=["Date"], index_col="Date")
-        breadth = pd.concat([full, breadth])
+    # 3️⃣ Monthly full history (only on 1st)
+    if today.day == 1:
+        if FULL_HISTORY_FILE.exists():
+            full = pd.read_csv(FULL_HISTORY_FILE, parse_dates=["Date"], index_col="Date")
+            breadth = pd.concat([full, breadth])
 
-    breadth = breadth[~breadth.index.duplicated(keep="last")]
-    breadth.sort_index(inplace=True)
-    breadth.to_csv(FULL_HISTORY_FILE)
+        breadth = breadth[~breadth.index.duplicated(keep="last")]
+        breadth.sort_index(inplace=True)
+        breadth.to_csv(FULL_HISTORY_FILE)
 
-    print("[SUCCESS] All required Trend + Breadth + Volatility variables generated")
+        print("[INFO] Monthly full history updated")
+
+    # ---------- LOG ----------
+    print("\n========== GENERATED STATE FILES ==========")
+    print(f" - {daily_file.name}")
+    print(f" - {LOOKBACK_FILE.name}")
+    if today.day == 1:
+        print(f" - {FULL_HISTORY_FILE.name}")
+    print("==========================================")
+    print("[SUCCESS] Daily market state pipeline completed")
 
 if __name__ == "__main__":
     main()
