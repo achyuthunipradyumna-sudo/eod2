@@ -50,10 +50,6 @@ jobs:
         run: |
           python -u src/breadth.py
 
-      - name: Generate interactive HTML dashboard
-        run: |
-          python -u src/generate_dashboard_html.py
-
       # -----------------------------
       # Checkout MarketAnalytics repo
       # -----------------------------
@@ -90,14 +86,6 @@ jobs:
           if [ -f src/output/breadth_full_history.csv ]; then
             cp src/output/breadth_full_history.csv MarketAnalytics/data/history
             cp src/output/breadth_full_history.csv MarketAnalytics/
-          fi
-
-          # ---- HTML DASHBOARDS ----
-          if ls src/output/*.html 1> /dev/null 2>&1; then
-            cp src/output/*.html MarketAnalytics/
-            echo "[INFO] HTML dashboards copied"
-          else
-            echo "[WARN] No HTML dashboards found"
           fi
       # -----------------------------
       # Commit & push to MarketAnalytics
