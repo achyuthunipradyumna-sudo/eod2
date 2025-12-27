@@ -19,10 +19,10 @@ LOOKBACK_DAILY = 260
 
 FULL_HISTORY_FILE = OUTPUT_DIR / "breadth_full_history.csv"
 
-# 🔑 Use patterns, not filenames
-INDEX_PATTERNS = {
-    "nifty50": ["nifty 50.csv"],
-    "nifty_total": ["nifty total market.csv"]
+# 🔑 logical identifiers → resolved dynamically
+INDEX_KEYS = {
+    "nifty50": "nifty 50",
+    "nifty_total": "nifty total market"
 }
 
 # ================= HELPERS =================
@@ -32,23 +32,40 @@ def zscore(series, window):
 def percentile(series):
     return series.rank(pct=True)
 
-def resolve_index_file(patterns):
-    matches = []
-    for p in patterns:
-        matches.extend(DATA_DIR.glob(p))
+def resolve_index_file(index_key: str) -> Path:
+    """
+    Robust resolver:
+    - scans directory once
+    - lowercases
+    - ignores futures / arbitrage / tr
+    - enforces exactly one match
+    """
+    key = index_key.lower()
+    candidates = []
 
-    if len(matches) == 0:
+    for f in DATA_DIR.iterdir():
+        if not f.name.lower().endswith(".csv"):
+            continue
+
+        name = f.name.lower()
+
+        if key in name:
+            if any(x in name for x in ["futures", "arbitrage", "tr"]):
+                continue
+            candidates.append(f)
+
+    if len(candidates) == 0:
         raise FileNotFoundError(
-            f"[ERROR] No index file found for patterns: {patterns}"
+            f"[ERROR] No index file found for key='{index_key}' in {DATA_DIR}"
         )
 
-    if len(matches) > 1:
+    if len(candidates) > 1:
         raise RuntimeError(
-            f"[ERROR] Multiple index files matched {patterns}: "
-            f"{[m.name for m in matches]}"
+            f"[ERROR] Ambiguous index files for key='{index_key}': "
+            f"{[c.name for c in candidates]}"
         )
 
-    return matches[0]
+    return candidates[0]
 
 def load_stock_by_path(path: Path):
     df = pd.read_csv(path, parse_dates=["Date"])
@@ -131,14 +148,19 @@ def plot_dashboard(df, name):
 def main():
     prices = {}
 
-    for f in DATA_DIR.glob("*.csv"):
+    # ---------- LOAD STOCK UNIVERSE ----------
+    for f in DATA_DIR.iterdir():
+        if not f.name.lower().endswith(".csv"):
+            continue
         if "nifty" in f.name.lower():
             continue
+
         prices[f.stem] = load_stock_by_path(f)["Close"]
 
     price_df = pd.DataFrame(prices)
     universe = price_df.count(axis=1)
 
+    # ---------- BREADTH ----------
     ret = price_df.diff()
     ad = (ret > 0).sum(axis=1) - (ret < 0).sum(axis=1)
 
@@ -152,23 +174,30 @@ def main():
 
     highs = price_df.rolling(NHNL_LOOKBACK).max()
     lows = price_df.rolling(NHNL_LOOKBACK).min()
+
     breadth["nhnl_z"] = zscore(
         (price_df >= highs).sum(axis=1) - (price_df <= lows).sum(axis=1),
         NHNL_LOOKBACK
     )
 
-    # ----- INDEX LAYERS -----
-    for name, patterns in INDEX_PATTERNS.items():
-        idx_path = resolve_index_file(patterns)
+    # ---------- INDEX LAYERS ----------
+    for name, key in INDEX_KEYS.items():
+        idx_path = resolve_index_file(key)
         idx = load_stock_by_path(idx_path)
 
-        breadth = breadth.join(compute_trend_structure(idx, breadth).add_prefix(f"{name}_"))
-        breadth = breadth.join(compute_index_volatility(idx).add_prefix(f"{name}_"))
-        breadth = breadth.join(compute_index_momentum(idx).add_prefix(f"{name}_"))
+        breadth = breadth.join(
+            compute_trend_structure(idx, breadth).add_prefix(f"{name}_")
+        )
+        breadth = breadth.join(
+            compute_index_volatility(idx).add_prefix(f"{name}_")
+        )
+        breadth = breadth.join(
+            compute_index_momentum(idx).add_prefix(f"{name}_")
+        )
 
         plot_dashboard(breadth.tail(LOOKBACK_DAILY), name)
 
-    # ----- OUTPUT -----
+    # ---------- OUTPUT ----------
     today = breadth.index[-1]
     breadth.loc[[today]].to_csv(OUTPUT_DIR / f"breadth_{today.date()}.csv")
 
@@ -180,7 +209,7 @@ def main():
     breadth.sort_index(inplace=True)
     breadth.to_csv(FULL_HISTORY_FILE)
 
-    print("[SUCCESS] Fixed index resolution + dashboards generated")
+    print("[SUCCESS] Index resolution fixed + dashboards generated")
 
 if __name__ == "__main__":
     main()
