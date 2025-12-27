@@ -93,6 +93,10 @@ jobs:
             cp src/output/*_dashboard.png MarketAnalytics/dashboards/
           fi
 
+          # ---- HTML DASHBOARD ----
+          if [ -f output/dashboard.html ]; then
+            cp output/dashboard.html MarketAnalytics/
+          fi
       # -----------------------------
       # Commit & push to MarketAnalytics
       # -----------------------------
