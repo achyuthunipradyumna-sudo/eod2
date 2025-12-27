@@ -1,10 +1,6 @@
-import os
 import pandas as pd
 import numpy as np
 from pathlib import Path
-from datetime import datetime
-import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
 
 np.seterr(divide="ignore", invalid="ignore")
 
@@ -51,106 +47,53 @@ def resolve_index_file(index_name: str) -> Path:
 
     return matches[0]
 
-def load_stock_by_path(path: Path):
+def load_stock(path: Path):
     df = pd.read_csv(path, parse_dates=["Date"])
     df = df.sort_values("Date")[["Date", "Close"]]
     df.set_index("Date", inplace=True)
     return df
 
-# ================= TREND =================
-def compute_trend_structure(index_df):
+# ================= INDEX METRICS =================
+def compute_trend(index_df):
     price = index_df["Close"]
     dma50 = price.rolling(50).mean()
     dma200 = price.rolling(200).mean()
 
-    trend = pd.DataFrame(index=price.index)
-    trend["price_above_50"] = (price > dma50).astype(int)
-    trend["price_above_200"] = (price > dma200).astype(int)
-    trend["dma200_slope_pct"] = dma200.pct_change(20) * 100
-    trend["dist_200_z"] = zscore(price / dma200 - 1, 200)
-    trend["persistence_200"] = (price > dma200).rolling(250).mean() * 100
+    out = pd.DataFrame(index=price.index)
+    out["dist_200_z"] = zscore(price / dma200 - 1, 200)
+    out["dma200_slope_pct"] = dma200.pct_change(20) * 100
+    out["persistence_200"] = (price > dma200).rolling(250).mean() * 100
+    return out
 
-    return trend
-
-# ================= VOLATILITY =================
-def compute_index_volatility(index_df):
+def compute_volatility(index_df):
     ret = np.log(index_df["Close"] / index_df["Close"].shift(1))
-    vol = pd.DataFrame(index=index_df.index)
+    out = pd.DataFrame(index=index_df.index)
 
     for w in VOL_WINDOWS:
         rv = ret.rolling(w).std() * np.sqrt(252)
-        vol[f"vol_{w}"] = rv
-        vol[f"vol_{w}_z"] = zscore(rv, 200)
+        out[f"vol_{w}_z"] = zscore(rv, 200)
 
-    return vol
+    return out
 
-# ================= MOMENTUM =================
-def compute_index_momentum(index_df):
+def compute_momentum(index_df):
     price = index_df["Close"]
-    mom = pd.DataFrame(index=price.index)
-
-    mom["mom_63"] = price.pct_change(63)
-    mom["mom_126"] = price.pct_change(126)
-    mom["mom_12_1"] = price.pct_change(252) - price.pct_change(21)
-    mom["mom_12_1_z"] = zscore(mom["mom_12_1"], 200)
-
-    return mom
-
-# ================= DASHBOARD =================
-def style_axis(ax, title):
-    ax.set_title(title, fontsize=12, weight="bold")
-    ax.grid(True, linestyle="--", alpha=0.35)
-    ax.axhline(0, color="black", linewidth=0.8, alpha=0.7)
-
-def plot_index_dashboard(df, index_key):
-    df = df.tail(LOOKBACK_DAILY)
-
-    fig, axes = plt.subplots(3, 1, figsize=(14, 12), sharex=True)
-    plt.subplots_adjust(hspace=0.28)
-
-    # PANEL 1 — BREADTH
-    axes[0].plot(df.index, df["ad_z_50"], label="AD Z(50)", linewidth=2)
-    axes[0].plot(df.index, df["pct_above_50dma_z"], label="%>50DMA Z", alpha=0.8)
-    axes[0].plot(df.index, df["pct_above_50dma_chg"], label="Participation Δ(20d)", linestyle="--")
-    style_axis(axes[0], "Panel 1 — Breadth & Participation")
-    axes[0].legend(loc="upper left")
-
-    # PANEL 2 — TREND
-    axes[1].plot(df.index, df[f"{index_key}_dist_200_z"], label="Distance from 200DMA (Z)", linewidth=2)
-    axes[1].plot(df.index, df[f"{index_key}_mom_126"], label="6M Momentum", alpha=0.7)
-    style_axis(axes[1], "Panel 2 — Trend Strength & Momentum")
-    axes[1].legend(loc="upper left")
-
-    # PANEL 3 — VOLATILITY / STRUCTURE
-    axes[2].plot(df.index, df["nhnl_z"], label="NH–NL Z", linewidth=2)
-    axes[2].plot(df.index, df[f"{index_key}_vol_20_z"], label="Index Vol Z(20)", alpha=0.7)
-    axes[2].plot(df.index, df["median_stock_vol_20_z"], label="Stock Vol Breadth Z", linestyle="--")
-    style_axis(axes[2], "Panel 3 — Volatility & Risk Regime")
-    axes[2].legend(loc="upper left")
-
-    axes[2].xaxis.set_major_locator(mdates.YearLocator())
-    axes[2].xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
-
-    fig.suptitle(f"{index_key.upper()} — Market Regime Dashboard", fontsize=14, weight="bold")
-
-    out = OUTPUT_DIR / f"{index_key}_3panel_dashboard.png"
-    plt.savefig(out, dpi=150)
-    plt.close()
-
-    print(f"[INFO] Dashboard saved → {out.name}")
+    out = pd.DataFrame(index=price.index)
+    out["mom_126"] = price.pct_change(126)
+    return out
 
 # ================= MAIN =================
 def main():
     prices = {}
     stock_vols = {20: {}, 50: {}}
 
+    # ---------- STOCK UNIVERSE ----------
     for f in DATA_DIR.iterdir():
         if not f.name.lower().endswith(".csv"):
             continue
         if "nifty" in f.name.lower():
             continue
 
-        df = load_stock_by_path(f)
+        df = load_stock(f)
         prices[f.stem] = df["Close"]
 
         ret = np.log(df["Close"] / df["Close"].shift(1))
@@ -159,16 +102,15 @@ def main():
 
     price_df = pd.DataFrame(prices)
 
-    # -------- BREADTH --------
+    # ---------- BREADTH ----------
     ret = price_df.diff()
     ad = (ret > 0).sum(axis=1) - (ret < 0).sum(axis=1)
 
-    breadth = pd.DataFrame({"ad": ad})
+    breadth = pd.DataFrame(index=price_df.index)
     breadth["ad_z_50"] = zscore(ad, 50)
 
     for w in DMA_WINDOWS:
         pct = (price_df > price_df.rolling(w).mean()).mean(axis=1) * 100
-        breadth[f"pct_above_{w}dma"] = pct
         breadth[f"pct_above_{w}dma_z"] = zscore(pct, 200)
         breadth[f"pct_above_{w}dma_chg"] = pct.diff(20)
 
@@ -179,22 +121,36 @@ def main():
 
     for w in VOL_WINDOWS:
         vol_df = pd.DataFrame(stock_vols[w])
-        med = vol_df.median(axis=1)
-        breadth[f"median_stock_vol_{w}_z"] = zscore(med, 200)
+        breadth[f"median_stock_vol_{w}_z"] = zscore(vol_df.median(axis=1), 200)
 
-    # -------- INDEX LAYERS + DASHBOARDS --------
+    # ---------- INDEX LAYERS ----------
     for name, key in INDEX_KEYS.items():
-        idx = load_stock_by_path(resolve_index_file(key))
-        breadth = breadth.join(compute_trend_structure(idx).add_prefix(f"{name}_"))
-        breadth = breadth.join(compute_index_volatility(idx).add_prefix(f"{name}_"))
-        breadth = breadth.join(compute_index_momentum(idx).add_prefix(f"{name}_"))
-        plot_index_dashboard(breadth, name)
+        idx = load_stock(resolve_index_file(key))
+        breadth = breadth.join(compute_trend(idx).add_prefix(f"{name}_"))
+        breadth = breadth.join(compute_volatility(idx).add_prefix(f"{name}_"))
+        breadth = breadth.join(compute_momentum(idx).add_prefix(f"{name}_"))
 
+    # ---------- OUTPUT FILES ----------
     today = breadth.index[-1]
+
+    # Daily snapshot
     breadth.loc[[today]].to_csv(OUTPUT_DIR / f"breadth_{today.date()}.csv")
+
+    # Lookback (HTML default)
     breadth.tail(LOOKBACK_DAILY).to_csv(LOOKBACK_FILE)
 
-    print("[SUCCESS] State files + enhanced dashboards generated")
+    # Monthly full history
+    if today.day == 1:
+        if FULL_HISTORY_FILE.exists():
+            full = pd.read_csv(FULL_HISTORY_FILE, parse_dates=["Date"], index_col="Date")
+            breadth = pd.concat([full, breadth])
+
+        breadth = breadth[~breadth.index.duplicated(keep="last")]
+        breadth.sort_index(inplace=True)
+        breadth.to_csv(FULL_HISTORY_FILE)
+        print("[INFO] Monthly full history updated")
+
+    print("[SUCCESS] State files generated for HTML dashboard")
 
 if __name__ == "__main__":
     main()
