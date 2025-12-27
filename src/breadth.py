@@ -108,16 +108,19 @@ def main():
     breadth = pd.DataFrame(index=price_df.index)
     breadth["ad_z_50"] = zscore(ad, 50)
 
+    # % stocks above DMAs
     for w in DMA_WINDOWS:
         pct = (price_df > price_df.rolling(w).mean()).mean(axis=1) * 100
         breadth[f"pct_above_{w}dma_z"] = zscore(pct, 200)
         breadth[f"pct_above_{w}dma_chg"] = pct.diff(20)
 
+    # New Highs – New Lows
     highs = price_df.rolling(NHNL_LOOKBACK).max()
     lows = price_df.rolling(NHNL_LOOKBACK).min()
     nhnl = (price_df >= highs).sum(axis=1) - (price_df <= lows).sum(axis=1)
     breadth["nhnl_z"] = zscore(nhnl, NHNL_LOOKBACK)
 
+    # Volatility breadth
     for w in VOL_WINDOWS:
         vol_df = pd.DataFrame(stock_vols[w])
         breadth[f"median_stock_vol_{w}_z"] = zscore(vol_df.median(axis=1), 200)
@@ -135,10 +138,10 @@ def main():
     # Daily snapshot
     breadth.loc[[today]].to_csv(OUTPUT_DIR / f"breadth_{today.date()}.csv")
 
-    # Lookback (HTML default)
+    # Lookback window
     breadth.tail(LOOKBACK_DAILY).to_csv(LOOKBACK_FILE)
 
-    # FULL HISTORY — GENERATED EVERY DAY
+    # Full history (append every day)
     if FULL_HISTORY_FILE.exists():
         full = pd.read_csv(FULL_HISTORY_FILE, parse_dates=["Date"], index_col="Date")
         breadth = pd.concat([full, breadth])
