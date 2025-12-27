@@ -93,12 +93,12 @@ jobs:
           fi
 
 					# ---- HTML DASHBOARDS ----
-					if ls src/output/*.html 1> /dev/null 2>&1; then
-						cp src/output/*.html MarketAnalytics/
-						echo "[INFO] HTML dashboards copied"
-					else
-						echo "[WARN] No HTML dashboards found"
-					fi
+          if ls src/output/*.html 1> /dev/null 2>&1; then
+            cp src/output/*.html MarketAnalytics/
+            echo "[INFO] HTML dashboards copied"
+          else
+            echo "[WARN] No HTML dashboards found"
+          fi
       # -----------------------------
       # Commit & push to MarketAnalytics
       # -----------------------------
