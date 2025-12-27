@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Volatility Dashboard</title>
+  <script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
+</head>
+<body>
+
+<h2>Volatility — Risk Regime</h2>
+
+<select id="index">
+  <option value="nifty50">NIFTY 50</option>
+  <option value="nifty_total">TOTAL MARKET</option>
+</select>
+
+<select id="range">
+  <option value="365">1Y</option>
+  <option value="1095">3Y</option>
+  <option value="all">All</option>
+</select>
+
+<div id="chart" style="height:900px;"></div>
+
+<script>
+let data;
+
+fetch("breadth_full_history.csv")
+.then(r=>r.text())
+.then(t=>{
+  const rows=t.trim().split("\n");
+  const h=rows[0].split(",");
+  data=rows.slice(1).map(r=>{
+    const v=r.split(",");
+    let o={}; h.forEach((k,i)=>o[k]=v[i]);
+    return o;
+  });
+  draw();
+});
+
+function draw(){
+  const i=index.value;
+  const r=range.value;
+  const d=r==="all"?data:data.slice(-r);
+  const x=d.map(o=>o.Date);
+
+  Plotly.newPlot("chart",[
+    {x,y:d.map(o=>+o[`${i}_vol_20_z`]),name:"Index Vol Z(20)"},
+    {x,y:d.map(o=>+o.median_stock_vol_20_z),name:"Stock Vol Breadth Z"}
+  ],{hovermode:"x unified"});
+}
+
+index.onchange=range.onchange=draw;
+</script>
+
+</body>
+</html>
