@@ -32,7 +32,12 @@ def percentile(series):
     return series.rank(pct=True)
 
 def load_stock(filename):
-    df = pd.read_csv(DATA_DIR / filename, parse_dates=["Date"])
+    path = DATA_DIR / filename
+
+    if not path.exists():
+        raise FileNotFoundError(f"[ERROR] Missing file: {path}")
+
+    df = pd.read_csv(path, parse_dates=["Date"])
     df = df.sort_values("Date")[["Date", "Close"]]
     df.set_index("Date", inplace=True)
     return df
