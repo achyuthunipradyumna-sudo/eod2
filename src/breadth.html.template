@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Breadth Dashboard</title>
+  <script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
+</head>
+<body>
+
+<h2>Breadth — Market Participation</h2>
+
+<label>Index:</label>
+<select id="index">
+  <option value="nifty50">NIFTY 50</option>
+  <option value="nifty_total">TOTAL MARKET</option>
+</select>
+
+<label>Mode:</label>
+<select id="mode">
+  <option value="z">Z-Score</option>
+  <option value="raw">Raw</option>
+</select>
+
+<label>Range:</label>
+<select id="range">
+  <option value="30">1M</option>
+  <option value="90">3M</option>
+  <option value="180">6M</option>
+  <option value="365">1Y</option>
+  <option value="1095">3Y</option>
+  <option value="1825">5Y</option>
+  <option value="all">All</option>
+</select>
+
+<div id="chart" style="height:900px;"></div>
+
+<script>
+let data;
+
+fetch("breadth_full_history.csv")
+.then(r => r.text())
+.then(t => {
+  const rows = t.trim().split("\n");
+  const h = rows[0].split(",");
+  data = rows.slice(1).map(r => {
+    const v = r.split(",");
+    let o = {};
+    h.forEach((k,i)=>o[k]=v[i]);
+    return o;
+  });
+  draw();
+});
+
+function slice(d,n){ return n==="all"?d:d.slice(-n); }
+
+function draw(){
+  const idx = index.value;
+  const mode = modeSel.value;
+  const n = range.value;
+  const d = slice(data,n);
+  const x = d.map(r=>r.Date);
+
+  const y = mode==="z"
+    ? [
+        {y:d.map(r=>+r.ad_z_50), name:"AD Z"},
+        {y:d.map(r=>+r.pct_above_50dma_z), name:"%>50DMA Z"},
+        {y:d.map(r=>+r.nhnl_z), name:"NH-NL Z"}
+      ]
+    : [
+        {y:d.map(r=>+r.ad), name:"AD Line"},
+        {y:d.map(r=>+r.pct_above_50dma), name:"%>50DMA"}
+      ];
+
+  Plotly.newPlot("chart",
+    y.map(s=>({...s,x,type:"scatter"})),
+    {hovermode:"x unified", title:"Breadth"}
+  );
+}
+
+index.onchange = modeSel.onchange = range.onchange = draw;
+</script>
+
+</body>
+</html>
