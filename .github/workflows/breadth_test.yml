@@ -66,31 +66,31 @@ jobs:
       - name: Copy analytics outputs
         run: |
           set -e
-
+      
           mkdir -p MarketAnalytics/data/daily
           mkdir -p MarketAnalytics/data/lookback
           mkdir -p MarketAnalytics/data/history
           mkdir -p MarketAnalytics/dashboards
-
+      
           # ---- DAILY CSV (latest) ----
-          DAILY_FILE=$(ls -t output/breadth_*.csv | head -1 || true)
+          DAILY_FILE=$(ls -t src/output/breadth_*.csv | head -1 || true)
           if [ -n "$DAILY_FILE" ]; then
             cp "$DAILY_FILE" MarketAnalytics/data/daily/
           fi
-
+      
           # ---- LOOKBACK ----
-          if [ -f output/breadth_lookback_260.csv ]; then
-            cp output/breadth_lookback_260.csv MarketAnalytics/data/lookback/
+          if [ -f src/output/breadth_lookback_260.csv ]; then
+            cp src/output/breadth_lookback_260.csv MarketAnalytics/data/lookback/
           fi
-
+      
           # ---- FULL HISTORY ----
-          if [ -f output/breadth_full_history.csv ]; then
-            cp output/breadth_full_history.csv MarketAnalytics/data/history/
+          if [ -f src/output/breadth_full_history.csv ]; then
+            cp src/output/breadth_full_history.csv MarketAnalytics/data/history/
           fi
-
-          # ---- DASHBOARDS (PNG) ----
-          if [ -d output ]; then
-            cp output/*_dashboard.png MarketAnalytics/dashboards/ || true
+      
+          # ---- DASHBOARDS ----
+          if ls src/output/*_dashboard.png 1> /dev/null 2>&1; then
+            cp src/output/*_dashboard.png MarketAnalytics/dashboards/
           fi
 
       # -----------------------------
