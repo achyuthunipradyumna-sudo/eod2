@@ -96,50 +96,44 @@ def compute_index_momentum(index_df):
 
     return mom
 
-# ================= DASHBOARD PLOTTING =================
+# ================= DASHBOARD =================
 def style_axis(ax, title):
     ax.set_title(title, fontsize=12, weight="bold")
-    ax.grid(True, linestyle="--", alpha=0.4)
+    ax.grid(True, linestyle="--", alpha=0.35)
     ax.axhline(0, color="black", linewidth=0.8, alpha=0.7)
 
 def plot_index_dashboard(df, index_key):
     df = df.tail(LOOKBACK_DAILY)
 
-    fig, axes = plt.subplots(
-        3, 1, figsize=(14, 12), sharex=True,
-        gridspec_kw={"hspace": 0.25}
-    )
+    fig, axes = plt.subplots(3, 1, figsize=(14, 12), sharex=True)
+    plt.subplots_adjust(hspace=0.28)
 
-    # ---------- PANEL 1: BREADTH ----------
-    axes[0].plot(df.index, df["ad_z_50"], label="AD Z(50)", color="tab:blue", linewidth=2)
-    axes[0].plot(df.index, df["pct_above_50dma_z"], label="%>50DMA Z", color="tab:green", alpha=0.8)
-    style_axis(axes[0], "Panel 1 — Short-Term Breadth & Participation")
+    # PANEL 1 — BREADTH
+    axes[0].plot(df.index, df["ad_z_50"], label="AD Z(50)", linewidth=2)
+    axes[0].plot(df.index, df["pct_above_50dma_z"], label="%>50DMA Z", alpha=0.8)
+    axes[0].plot(df.index, df["pct_above_50dma_chg"], label="Participation Δ(20d)", linestyle="--")
+    style_axis(axes[0], "Panel 1 — Breadth & Participation")
     axes[0].legend(loc="upper left")
 
-    # ---------- PANEL 2: TREND + MOMENTUM ----------
-    axes[1].plot(df.index, df[f"{index_key}_dist_200_z"], label="Distance from 200DMA (Z)", color="tab:orange", linewidth=2)
-    axes[1].plot(df.index, df[f"{index_key}_mom_126"], label="6M Momentum", color="tab:red", alpha=0.7)
-    style_axis(axes[1], "Panel 2 — Trend Strength & Medium-Term Momentum")
+    # PANEL 2 — TREND
+    axes[1].plot(df.index, df[f"{index_key}_dist_200_z"], label="Distance from 200DMA (Z)", linewidth=2)
+    axes[1].plot(df.index, df[f"{index_key}_mom_126"], label="6M Momentum", alpha=0.7)
+    style_axis(axes[1], "Panel 2 — Trend Strength & Momentum")
     axes[1].legend(loc="upper left")
 
-    # ---------- PANEL 3: VOL + STRUCTURE ----------
-    axes[2].plot(df.index, df["nhnl_z"], label="NH-NL Z", color="tab:purple", linewidth=2)
-    axes[2].plot(df.index, df[f"{index_key}_vol_20_z"], label="Volatility Z(20)", color="tab:brown", alpha=0.7)
-    style_axis(axes[2], "Panel 3 — Volatility & Market Structure")
+    # PANEL 3 — VOLATILITY / STRUCTURE
+    axes[2].plot(df.index, df["nhnl_z"], label="NH–NL Z", linewidth=2)
+    axes[2].plot(df.index, df[f"{index_key}_vol_20_z"], label="Index Vol Z(20)", alpha=0.7)
+    axes[2].plot(df.index, df["median_stock_vol_20_z"], label="Stock Vol Breadth Z", linestyle="--")
+    style_axis(axes[2], "Panel 3 — Volatility & Risk Regime")
     axes[2].legend(loc="upper left")
 
-    # ---------- X-AXIS ----------
     axes[2].xaxis.set_major_locator(mdates.YearLocator())
     axes[2].xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
 
-    fig.suptitle(
-        f"{index_key.upper()} — Market Regime Dashboard",
-        fontsize=14,
-        weight="bold"
-    )
+    fig.suptitle(f"{index_key.upper()} — Market Regime Dashboard", fontsize=14, weight="bold")
 
     out = OUTPUT_DIR / f"{index_key}_3panel_dashboard.png"
-    plt.tight_layout(rect=[0, 0, 1, 0.96])
     plt.savefig(out, dpi=150)
     plt.close()
 
@@ -150,7 +144,6 @@ def main():
     prices = {}
     stock_vols = {20: {}, 50: {}}
 
-    # ---------- STOCK UNIVERSE ----------
     for f in DATA_DIR.iterdir():
         if not f.name.lower().endswith(".csv"):
             continue
@@ -166,7 +159,7 @@ def main():
 
     price_df = pd.DataFrame(prices)
 
-    # ---------- BREADTH ----------
+    # -------- BREADTH --------
     ret = price_df.diff()
     ad = (ret > 0).sum(axis=1) - (ret < 0).sum(axis=1)
 
@@ -177,6 +170,7 @@ def main():
         pct = (price_df > price_df.rolling(w).mean()).mean(axis=1) * 100
         breadth[f"pct_above_{w}dma"] = pct
         breadth[f"pct_above_{w}dma_z"] = zscore(pct, 200)
+        breadth[f"pct_above_{w}dma_chg"] = pct.diff(20)
 
     highs = price_df.rolling(NHNL_LOOKBACK).max()
     lows = price_df.rolling(NHNL_LOOKBACK).min()
@@ -186,33 +180,21 @@ def main():
     for w in VOL_WINDOWS:
         vol_df = pd.DataFrame(stock_vols[w])
         med = vol_df.median(axis=1)
-        breadth[f"median_stock_vol_{w}"] = med
         breadth[f"median_stock_vol_{w}_z"] = zscore(med, 200)
 
-    # ---------- INDEX LAYERS + DASHBOARDS ----------
+    # -------- INDEX LAYERS + DASHBOARDS --------
     for name, key in INDEX_KEYS.items():
         idx = load_stock_by_path(resolve_index_file(key))
-
         breadth = breadth.join(compute_trend_structure(idx).add_prefix(f"{name}_"))
         breadth = breadth.join(compute_index_volatility(idx).add_prefix(f"{name}_"))
         breadth = breadth.join(compute_index_momentum(idx).add_prefix(f"{name}_"))
-
         plot_index_dashboard(breadth, name)
 
-    # ---------- STATE FILES ----------
     today = breadth.index[-1]
     breadth.loc[[today]].to_csv(OUTPUT_DIR / f"breadth_{today.date()}.csv")
     breadth.tail(LOOKBACK_DAILY).to_csv(LOOKBACK_FILE)
 
-    if today.day == 1:
-        if FULL_HISTORY_FILE.exists():
-            full = pd.read_csv(FULL_HISTORY_FILE, parse_dates=["Date"], index_col="Date")
-            breadth = pd.concat([full, breadth])
-        breadth = breadth[~breadth.index.duplicated(keep="last")]
-        breadth.sort_index(inplace=True)
-        breadth.to_csv(FULL_HISTORY_FILE)
-
-    print("[SUCCESS] State files + readable dashboards generated")
+    print("[SUCCESS] State files + enhanced dashboards generated")
 
 if __name__ == "__main__":
     main()
