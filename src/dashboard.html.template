@@ -4,19 +4,39 @@
   <meta charset="utf-8">
   <title>Market Regime Dashboard</title>
   <script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
+
   <style>
     body {
       font-family: Arial, sans-serif;
       margin: 20px;
     }
-    select, button {
+
+    h2 {
+      margin-bottom: 10px;
+    }
+
+    .controls {
+      margin-bottom: 20px;
+    }
+
+    .panel {
+      margin-top: 30px;
+      border-top: 2px solid #ddd;
+      padding-top: 15px;
+    }
+
+    .panel h3 {
+      margin-bottom: 8px;
+    }
+
+    .chart {
+      width: 100%;
+      height: 350px;
+    }
+
+    select {
       padding: 6px;
       margin-right: 12px;
-      font-size: 14px;
-    }
-    #chart {
-      width: 100%;
-      height: 1000px;
     }
   </style>
 </head>
@@ -25,30 +45,48 @@
 
 <h2>Market Regime Dashboard</h2>
 
-<label>Index:</label>
-<select id="indexSelector">
-  <option value="nifty50">NIFTY 50</option>
-  <option value="nifty_total">NIFTY TOTAL MARKET</option>
-</select>
+<div class="controls">
+  <label>Index:</label>
+  <select id="indexSelector">
+    <option value="nifty50">NIFTY 50</option>
+    <option value="nifty_total">NIFTY TOTAL MARKET</option>
+  </select>
 
-<label>Time Range:</label>
-<select id="rangeSelector">
-  <option value="30">1 Month</option>
-  <option value="90">3 Months</option>
-  <option value="180">6 Months</option>
-  <option value="365">1 Year</option>
-  <option value="1095">3 Years</option>
-  <option value="1825">5 Years</option>
-  <option value="all">Entire History</option>
-</select>
+  <label>View:</label>
+  <select id="modeSelector">
+    <option value="z">Z-Scores</option>
+    <option value="raw">Raw Values</option>
+  </select>
 
-<label>View:</label>
-<select id="modeSelector">
-  <option value="z">Z-Score</option>
-  <option value="raw">Raw</option>
-</select>
+  <label>Range:</label>
+  <select id="rangeSelector">
+    <option value="30">1M</option>
+    <option value="90">3M</option>
+    <option value="180">6M</option>
+    <option value="365">1Y</option>
+    <option value="1095">3Y</option>
+    <option value="1825">5Y</option>
+    <option value="all">All</option>
+  </select>
+</div>
 
-<div id="chart"></div>
+<!-- ================= BREADTH ================= -->
+<div class="panel">
+  <h3>📊 Breadth</h3>
+  <div id="breadthChart" class="chart"></div>
+</div>
+
+<!-- ================= TREND ================= -->
+<div class="panel">
+  <h3>📈 Trend</h3>
+  <div id="trendChart" class="chart"></div>
+</div>
+
+<!-- ================= VOLATILITY ================= -->
+<div class="panel">
+  <h3>🌊 Volatility</h3>
+  <div id="volChart" class="chart"></div>
+</div>
 
 <script>
 let rawData;
@@ -69,104 +107,77 @@ fetch("breadth_full_history.csv")
 
 function sliceData(days) {
   if (days === "all") return rawData;
-  return rawData.slice(-parseInt(days));
+  return rawData.slice(-days);
 }
 
 function render() {
-  const idx = document.getElementById("indexSelector").value;
-  const range = document.getElementById("rangeSelector").value;
-  const mode = document.getElementById("modeSelector").value;
+  const idx = indexSelector.value;
+  const mode = modeSelector.value;
+  const range = rangeSelector.value;
 
   const data = sliceData(range);
   const x = data.map(d => new Date(d.Date));
 
-  const breadthY = mode === "z" ? "ad_z_50" : "pct_above_50dma";
-  const nhnlY   = mode === "z" ? "nhnl_z" : "nhnl_raw";
-
-  const trendY  = mode === "z"
-      ? `${idx}_dist_200_z`
-      : `${idx}_persistence_200`;
-
-  const momY = `${idx}_mom_126`;
-
-  const volIdxY = mode === "z"
-      ? `${idx}_vol_20_z`
-      : `${idx}_vol_20`;
-
-  const volStockY = mode === "z"
-      ? "median_stock_vol_20_z"
-      : "median_stock_vol_20";
-
-  const traces = [
-
-    /* PANEL 1 — BREADTH */
+  /* ================= BREADTH ================= */
+  Plotly.newPlot("breadthChart", [
     {
-      x, y: data.map(d => +d[breadthY]),
-      name: "Advance-Decline / Participation",
-      xaxis: "x",
-      yaxis: "y1",
-      line: {color: "#1f77b4"}
+      x, y: data.map(d => +d.ad_z_50),
+      name: "AD Z(50)",
+      visible: mode === "z"
     },
     {
-      x, y: data.map(d => +d[nhnlY]),
-      name: "NH-NL",
-      xaxis: "x",
-      yaxis: "y1",
-      line: {color: "#9467bd"}
-    },
-
-    /* PANEL 2 — TREND */
-    {
-      x, y: data.map(d => +d[trendY]),
-      name: "Trend Strength",
-      xaxis: "x",
-      yaxis: "y2",
-      line: {color: "#ff7f0e"}
+      x, y: data.map(d => +d.pct_above_50dma_z),
+      name: "% > 50DMA Z",
+      visible: mode === "z"
     },
     {
-      x, y: data.map(d => +d[momY]),
-      name: "6M Momentum",
-      xaxis: "x",
-      yaxis: "y2",
-      line: {color: "#d62728", dash: "dot"}
-    },
-
-    /* PANEL 3 — VOLATILITY */
-    {
-      x, y: data.map(d => +d[volIdxY]),
-      name: "Index Volatility",
-      xaxis: "x",
-      yaxis: "y3",
-      line: {color: "#8c564b"}
-    },
-    {
-      x, y: data.map(d => +d[volStockY]),
-      name: "Stock Volatility Breadth",
-      xaxis: "x",
-      yaxis: "y3",
-      line: {color: "#000000"}
+      x, y: data.map(d => +d.nhnl_z),
+      name: "NH–NL Z",
+      visible: mode === "z"
     }
-  ];
+  ], {
+    title: "Breadth Participation",
+    hovermode: "x unified"
+  });
 
-  const layout = {
-    grid: {rows: 3, columns: 1, pattern: "independent"},
-    height: 1000,
-    hovermode: "x unified",
+  /* ================= TREND ================= */
+  Plotly.newPlot("trendChart", [
+    {
+      x, y: data.map(d => +d[`${idx}_dist_200_z`]),
+      name: "Distance from 200DMA (Z)",
+      visible: mode === "z"
+    },
+    {
+      x, y: data.map(d => +d[`${idx}_mom_126`]),
+      name: "6M Momentum",
+      visible: mode === "raw"
+    }
+  ], {
+    title: "Trend Structure",
+    hovermode: "x unified"
+  });
 
-    yaxis:  {title: "Breadth", zeroline: true},
-    yaxis2: {title: "Trend / Momentum", zeroline: true},
-    yaxis3: {title: "Volatility", zeroline: true},
-
-    legend: {orientation: "h"},
-    margin: {t: 40}
-  };
-
-  Plotly.newPlot("chart", traces, layout);
+  /* ================= VOLATILITY ================= */
+  Plotly.newPlot("volChart", [
+    {
+      x, y: data.map(d => +d[`${idx}_vol_20_z`]),
+      name: "Index Vol Z(20)",
+      visible: mode === "z"
+    },
+    {
+      x, y: data.map(d => +d.median_stock_vol_20_z),
+      name: "Stock Vol Breadth Z",
+      visible: mode === "z"
+    }
+  ], {
+    title: "Risk & Volatility",
+    hovermode: "x unified"
+  });
 }
 
-document.getElementById("indexSelector").onchange = render;
-document.getElementById("rangeSelector").onchange = render;
-document.getElementById("modeSelector").onchange = render;
+indexSelector.onchange = render;
+modeSelector.onchange = render;
+rangeSelector.onchange = render;
 </script>
 
 </body>
