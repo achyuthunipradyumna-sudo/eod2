@@ -56,7 +56,6 @@ def load_stock(path: Path):
 # ================= INDEX METRICS =================
 def compute_trend(index_df):
     price = index_df["Close"]
-    dma50 = price.rolling(50).mean()
     dma200 = price.rolling(200).mean()
 
     out = pd.DataFrame(index=price.index)
@@ -139,18 +138,16 @@ def main():
     # Lookback (HTML default)
     breadth.tail(LOOKBACK_DAILY).to_csv(LOOKBACK_FILE)
 
-    # Monthly full history
-    if today.day == 1:
-        if FULL_HISTORY_FILE.exists():
-            full = pd.read_csv(FULL_HISTORY_FILE, parse_dates=["Date"], index_col="Date")
-            breadth = pd.concat([full, breadth])
+    # FULL HISTORY — GENERATED EVERY DAY
+    if FULL_HISTORY_FILE.exists():
+        full = pd.read_csv(FULL_HISTORY_FILE, parse_dates=["Date"], index_col="Date")
+        breadth = pd.concat([full, breadth])
 
-        breadth = breadth[~breadth.index.duplicated(keep="last")]
-        breadth.sort_index(inplace=True)
-        breadth.to_csv(FULL_HISTORY_FILE)
-        print("[INFO] Monthly full history updated")
+    breadth = breadth[~breadth.index.duplicated(keep="last")]
+    breadth.sort_index(inplace=True)
+    breadth.to_csv(FULL_HISTORY_FILE)
 
-    print("[SUCCESS] State files generated for HTML dashboard")
+    print("[SUCCESS] Daily snapshot, lookback, and full history generated")
 
 if __name__ == "__main__":
     main()
