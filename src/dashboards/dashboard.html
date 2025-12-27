@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Market Regime Dashboard</title>
+
+  <!-- Plotly -->
+  <script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
+
+  <!-- PapaParse for CSV -->
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      background: #f7f7f7;
+    }
+    header {
+      background: #111;
+      color: white;
+      padding: 12px 20px;
+      display: flex;
+      gap: 20px;
+      align-items: center;
+    }
+    select {
+      padding: 6px;
+      font-size: 14px;
+    }
+    .chart {
+      height: 33vh;
+    }
+  </style>
+</head>
+
+<body>
+
+<header>
+  <strong>Market Regime Dashboard</strong>
+
+  <label>
+    Index:
+    <select id="indexSelect">
+      <option value="nifty50">NIFTY 50</option>
+      <option value="nifty_total">NIFTY Total Market</option>
+    </select>
+  </label>
+
+  <label>
+    Time Range:
+    <select id="rangeSelect">
+      <option value="30">1 Month</option>
+      <option value="90">3 Months</option>
+      <option value="180">6 Months</option>
+      <option value="365">1 Year</option>
+      <option value="1095">3 Years</option>
+      <option value="1825">5 Years</option>
+      <option value="max">Max</option>
+    </select>
+  </label>
+</header>
+
+<div id="breadth" class="chart"></div>
+<div id="trend" class="chart"></div>
+<div id="volatility" class="chart"></div>
+
+<script>
+let rawData = [];
+
+function loadCSV() {
+  Papa.parse("output/breadth_full_history.csv", {
+    download: true,
+    header: true,
+    dynamicTyping: true,
+    complete: function(results) {
+      rawData = results.data.filter(r => r.Date);
+      updateCharts();
+    }
+  });
+}
+
+function sliceData(days) {
+  if (days === "max") return rawData;
+  return rawData.slice(-days);
+}
+
+function updateCharts() {
+  const indexKey = document.getElementById("indexSelect").value;
+  const range = document.getElementById("rangeSelect").value;
+  const data = sliceData(range);
+
+  const dates = data.map(d => d.Date);
+
+  /* ---------- PANEL 1: BREADTH ---------- */
+  Plotly.newPlot("breadth", [
+    {
+      x: dates,
+      y: data.map(d => d.ad_z_50),
+      name: "AD Z(50)",
+      line: { width: 2 }
+    },
+    {
+      x: dates,
+      y: data.map(d => d.pct_above_50dma_z),
+      name: "% > 50DMA Z",
+      line: { dash: "dot" }
+    }
+  ], {
+    title: "Breadth & Participation",
+    yaxis: { zeroline: true },
+    margin: { t: 40 }
+  });
+
+  /* ---------- PANEL 2: TREND ---------- */
+  Plotly.newPlot("trend", [
+    {
+      x: dates,
+      y: data.map(d => d[`${indexKey}_dist_200_z`]),
+      name: "Distance from 200DMA (Z)",
+      line: { width: 2 }
+    },
+    {
+      x: dates,
+      y: data.map(d => d[`${indexKey}_mom_126`]),
+      name: "6M Momentum",
+      yaxis: "y2",
+      line: { dash: "dot" }
+    }
+  ], {
+    title: "Trend & Momentum",
+    yaxis: { zeroline: true },
+    yaxis2: {
+      overlaying: "y",
+      side: "right"
+    },
+    margin: { t: 40 }
+  });
+
+  /* ---------- PANEL 3: VOLATILITY ---------- */
+  Plotly.newPlot("volatility", [
+    {
+      x: dates,
+      y: data.map(d => d.nhnl_z),
+      name: "NH-NL Z",
+      line: { width: 2 }
+    },
+    {
+      x: dates,
+      y: data.map(d => d[`${indexKey}_vol_20_z`]),
+      name: "Volatility Z(20)",
+      line: { dash: "dot" }
+    }
+  ], {
+    title: "Volatility & Market Structure",
+    yaxis: { zeroline: true },
+    margin: { t: 40 }
+  });
+}
+
+document.getElementById("indexSelect").onchange = updateCharts;
+document.getElementById("rangeSelect").onchange = updateCharts;
+
+loadCSV();
+</script>
+
+</body>
+</html>
