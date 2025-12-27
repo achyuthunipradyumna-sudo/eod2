@@ -34,11 +34,9 @@ def resolve_index_file(index_name: str) -> Path:
     for f in DATA_DIR.iterdir():
         if not f.name.lower().endswith(".csv"):
             continue
-
         name = f.name.lower().replace(".csv", "").strip()
         if any(x in name for x in ["futures", "arbitrage", "tr"]):
             continue
-
         if name == index_name:
             matches.append(f)
 
@@ -52,33 +50,6 @@ def load_stock(path: Path):
     df = df.sort_values("Date")[["Date", "Close"]]
     df.set_index("Date", inplace=True)
     return df
-
-# ================= INDEX METRICS =================
-def compute_trend(index_df):
-    price = index_df["Close"]
-    dma200 = price.rolling(200).mean()
-
-    out = pd.DataFrame(index=price.index)
-    out["dist_200_z"] = zscore(price / dma200 - 1, 200)
-    out["dma200_slope_pct"] = dma200.pct_change(20) * 100
-    out["persistence_200"] = (price > dma200).rolling(250).mean() * 100
-    return out
-
-def compute_volatility(index_df):
-    ret = np.log(index_df["Close"] / index_df["Close"].shift(1))
-    out = pd.DataFrame(index=index_df.index)
-
-    for w in VOL_WINDOWS:
-        rv = ret.rolling(w).std() * np.sqrt(252)
-        out[f"vol_{w}_z"] = zscore(rv, 200)
-
-    return out
-
-def compute_momentum(index_df):
-    price = index_df["Close"]
-    out = pd.DataFrame(index=price.index)
-    out["mom_126"] = price.pct_change(126)
-    return out
 
 # ================= MAIN =================
 def main():
@@ -100,48 +71,67 @@ def main():
             stock_vols[w][f.stem] = ret.rolling(w).std() * np.sqrt(252)
 
     price_df = pd.DataFrame(prices)
+    universe = price_df.count(axis=1)
 
-    # ---------- BREADTH ----------
+    # ---------- ADV / DECL ----------
     ret = price_df.diff()
-    ad = (ret > 0).sum(axis=1) - (ret < 0).sum(axis=1)
+    adv = (ret > 0).sum(axis=1)
+    dec = (ret < 0).sum(axis=1)
+    ad = adv - dec
 
     breadth = pd.DataFrame(index=price_df.index)
+    breadth["adv"] = adv
+    breadth["dec"] = dec
+    breadth["ad"] = ad
     breadth["ad_z_50"] = zscore(ad, 50)
 
-    # % stocks above DMAs
+    # ---------- % ABOVE DMAs ----------
     for w in DMA_WINDOWS:
-        pct = (price_df > price_df.rolling(w).mean()).mean(axis=1) * 100
+        pct = (price_df > price_df.rolling(w).mean()).sum(axis=1) / universe * 100
+        breadth[f"pct_above_{w}dma"] = pct
         breadth[f"pct_above_{w}dma_z"] = zscore(pct, 200)
         breadth[f"pct_above_{w}dma_chg"] = pct.diff(20)
 
-    # New Highs – New Lows
+    # ---------- NEW HIGHS / LOWS ----------
     highs = price_df.rolling(NHNL_LOOKBACK).max()
     lows = price_df.rolling(NHNL_LOOKBACK).min()
-    nhnl = (price_df >= highs).sum(axis=1) - (price_df <= lows).sum(axis=1)
+
+    nh = (price_df >= highs).sum(axis=1)
+    nl = (price_df <= lows).sum(axis=1)
+    nhnl = nh - nl
+
+    breadth["nh"] = nh
+    breadth["nl"] = nl
+    breadth["nhnl"] = nhnl
     breadth["nhnl_z"] = zscore(nhnl, NHNL_LOOKBACK)
 
-    # Volatility breadth
+    # ---------- VOLATILITY BREADTH ----------
     for w in VOL_WINDOWS:
         vol_df = pd.DataFrame(stock_vols[w])
-        breadth[f"median_stock_vol_{w}_z"] = zscore(vol_df.median(axis=1), 200)
+        med = vol_df.median(axis=1)
+        breadth[f"median_stock_vol_{w}"] = med
+        breadth[f"median_stock_vol_{w}_z"] = zscore(med, 200)
 
     # ---------- INDEX LAYERS ----------
     for name, key in INDEX_KEYS.items():
         idx = load_stock(resolve_index_file(key))
-        breadth = breadth.join(compute_trend(idx).add_prefix(f"{name}_"))
-        breadth = breadth.join(compute_volatility(idx).add_prefix(f"{name}_"))
-        breadth = breadth.join(compute_momentum(idx).add_prefix(f"{name}_"))
+        price = idx["Close"]
+        dma200 = price.rolling(200).mean()
+        ret = np.log(price / price.shift(1))
 
-    # ---------- OUTPUT FILES ----------
+        breadth[f"{name}_dist_200_z"] = zscore(price / dma200 - 1, 200)
+        breadth[f"{name}_dma200_slope_pct"] = dma200.pct_change(20) * 100
+        breadth[f"{name}_persistence_200"] = (price > dma200).rolling(250).mean() * 100
+        breadth[f"{name}_vol_20_z"] = zscore(ret.rolling(20).std() * np.sqrt(252), 200)
+        breadth[f"{name}_vol_50_z"] = zscore(ret.rolling(50).std() * np.sqrt(252), 200)
+        breadth[f"{name}_mom_126"] = price.pct_change(126)
+
+    # ---------- OUTPUT ----------
     today = breadth.index[-1]
 
-    # Daily snapshot
     breadth.loc[[today]].to_csv(OUTPUT_DIR / f"breadth_{today.date()}.csv")
-
-    # Lookback window
     breadth.tail(LOOKBACK_DAILY).to_csv(LOOKBACK_FILE)
 
-    # Full history (append every day)
     if FULL_HISTORY_FILE.exists():
         full = pd.read_csv(FULL_HISTORY_FILE, parse_dates=["Date"], index_col="Date")
         breadth = pd.concat([full, breadth])
@@ -150,7 +140,7 @@ def main():
     breadth.sort_index(inplace=True)
     breadth.to_csv(FULL_HISTORY_FILE)
 
-    print("[SUCCESS] Daily snapshot, lookback, and full history generated")
+    print("[SUCCESS] Raw + Z-score breadth fully generated")
 
 if __name__ == "__main__":
     main()
