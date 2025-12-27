@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Trend Dashboard</title>
+  <script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
+</head>
+<body>
+
+<h2>Trend — Direction & Strength</h2>
+
+<select id="index">
+  <option value="nifty50">NIFTY 50</option>
+  <option value="nifty_total">TOTAL MARKET</option>
+</select>
+
+<select id="mode">
+  <option value="z">Z-Score</option>
+  <option value="raw">Raw</option>
+</select>
+
+<select id="range">
+  <option value="365">1Y</option>
+  <option value="1095">3Y</option>
+  <option value="1825">5Y</option>
+  <option value="all">All</option>
+</select>
+
+<div id="chart" style="height:900px;"></div>
+
+<script>
+let data;
+
+fetch("breadth_full_history.csv")
+.then(r=>r.text())
+.then(t=>{
+  const rows=t.trim().split("\n");
+  const h=rows[0].split(",");
+  data=rows.slice(1).map(r=>{
+    const v=r.split(",");
+    let o={}; h.forEach((k,i)=>o[k]=v[i]);
+    return o;
+  });
+  draw();
+});
+
+function draw(){
+  const i=index.value;
+  const m=mode.value;
+  const r=range.value;
+  const d=r==="all"?data:data.slice(-r);
+  const x=d.map(o=>o.Date);
+
+  const y = m==="z"
+    ? [
+        {y:d.map(o=>+o[`${i}_dist_200_z`]), name:"Dist 200DMA Z"},
+        {y:d.map(o=>+o[`${i}_mom_12_1_z`]), name:"12-1 Momentum Z"}
+      ]
+    : [
+        {y:d.map(o=>+o[`${i}_persistence_200`]), name:"% Time >200DMA"},
+        {y:d.map(o=>+o[`${i}_dma200_slope_pct`]), name:"200DMA Slope"}
+      ];
+
+  Plotly.newPlot("chart",
+    y.map(s=>({...s,x,type:"scatter"})),
+    {hovermode:"x unified"}
+  );
+}
+
+index.onchange=mode.onchange=range.onchange=draw;
+</script>
+
+</body>
+</html>
