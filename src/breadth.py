@@ -19,6 +19,7 @@ AD_MA_WINDOWS = [50, 200]
 LOOKBACK_DAILY = 260
 
 FULL_HISTORY_FILE = OUTPUT_DIR / "breadth_full_history.csv"
+LOOKBACK_FILE = OUTPUT_DIR / f"breadth_lookback_{LOOKBACK_DAILY}.csv"
 
 # Logical identifiers → exact index names
 INDEX_KEYS = {
@@ -29,9 +30,6 @@ INDEX_KEYS = {
 # ================= HELPERS =================
 def zscore(series, window):
     return (series - series.rolling(window).mean()) / series.rolling(window).std()
-
-def percentile(series):
-    return series.rank(pct=True)
 
 def resolve_index_file(index_name: str) -> Path:
     """
@@ -75,7 +73,7 @@ def load_stock_by_path(path: Path):
     return df
 
 # ================= TREND =================
-def compute_trend_structure(index_df, breadth):
+def compute_trend_structure(index_df):
     price = index_df["Close"]
     dma50 = price.rolling(50).mean()
     dma200 = price.rolling(200).mean()
@@ -190,7 +188,7 @@ def main():
         idx = load_stock_by_path(idx_path)
 
         breadth = breadth.join(
-            compute_trend_structure(idx, breadth).add_prefix(f"{name}_")
+            compute_trend_structure(idx).add_prefix(f"{name}_")
         )
         breadth = breadth.join(
             compute_index_volatility(idx).add_prefix(f"{name}_")
@@ -201,10 +199,13 @@ def main():
 
         plot_dashboard(breadth.tail(LOOKBACK_DAILY), name)
 
-    # ---------- OUTPUT CSVs ----------
+    # ---------- OUTPUT FILES ----------
     today = breadth.index[-1]
+
     daily_file = OUTPUT_DIR / f"breadth_{today.date()}.csv"
     breadth.loc[[today]].to_csv(daily_file)
+
+    breadth.tail(LOOKBACK_DAILY).to_csv(LOOKBACK_FILE)
 
     if FULL_HISTORY_FILE.exists():
         full = pd.read_csv(FULL_HISTORY_FILE, parse_dates=["Date"], index_col="Date")
@@ -214,7 +215,7 @@ def main():
     breadth.sort_index(inplace=True)
     breadth.to_csv(FULL_HISTORY_FILE)
 
-    # ---------- FINAL FILE LISTING ----------
+    # ---------- FINAL FILE LIST ----------
     print("\n========== GENERATED OUTPUT FILES ==========")
     for f in sorted(OUTPUT_DIR.glob("*")):
         print(f" - {f.name}")
