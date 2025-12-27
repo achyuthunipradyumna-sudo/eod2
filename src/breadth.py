@@ -7,8 +7,9 @@ import matplotlib.pyplot as plt
 np.seterr(divide="ignore", invalid="ignore")
 
 # ================= CONFIG =================
-DATA_DIR = Path("src/eod2_data/daily")
-OUTPUT_DIR = Path("output")
+BASE_DIR = Path(__file__).resolve().parent
+DATA_DIR = BASE_DIR / "eod2_data" / "daily"
+OUTPUT_DIR = BASE_DIR / "output"
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 DMA_WINDOWS = [20, 50, 200]
