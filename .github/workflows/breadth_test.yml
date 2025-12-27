@@ -94,7 +94,7 @@ jobs:
 
           # ---- HTML DASHBOARD ----
           if [ -f src/output/dashboard.html ]; then
-            cp src/output/dashboard.html MarketAnalytics/index.html
+            cp src/output/*.html MarketAnalytics/
           fi
 
       # -----------------------------
