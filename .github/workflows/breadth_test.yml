@@ -41,7 +41,7 @@ jobs:
       # -----------------------------
       - name: Update NSE EOD data
         run: |
-          python -u src/init.py
+          python -u src/init.py || echo "[INFO] NSE EOD not available yet, continuing"
 
       # -----------------------------
       # Run analytics pipeline
