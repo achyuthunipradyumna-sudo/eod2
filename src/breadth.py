@@ -13,15 +13,13 @@ OUTPUT_DIR = BASE_DIR / "output"
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 DMA_WINDOWS = [20, 50, 200]
-VOL_WINDOWS = [20, 50, 200]
+VOL_WINDOWS = [20, 50]
 NHNL_LOOKBACK = 252
-AD_MA_WINDOWS = [50, 200]
 LOOKBACK_DAILY = 260
 
 FULL_HISTORY_FILE = OUTPUT_DIR / "breadth_full_history.csv"
 LOOKBACK_FILE = OUTPUT_DIR / f"breadth_lookback_{LOOKBACK_DAILY}.csv"
 
-# Logical identifiers → exact index names
 INDEX_KEYS = {
     "nifty50": "nifty 50",
     "nifty_total": "nifty total market",
@@ -32,12 +30,6 @@ def zscore(series, window):
     return (series - series.rolling(window).mean()) / series.rolling(window).std()
 
 def resolve_index_file(index_name: str) -> Path:
-    """
-    Strict resolver:
-    - exact filename match (minus .csv)
-    - avoids 'nifty 50' matching 'nifty 500'
-    - ignores futures / arbitrage / tr
-    """
     index_name = index_name.lower().strip()
     matches = []
 
@@ -46,23 +38,14 @@ def resolve_index_file(index_name: str) -> Path:
             continue
 
         name = f.name.lower().replace(".csv", "").strip()
-
         if any(x in name for x in ["futures", "arbitrage", "tr"]):
             continue
 
         if name == index_name:
             matches.append(f)
 
-    if len(matches) == 0:
-        raise FileNotFoundError(
-            f"[ERROR] No exact index file found for '{index_name}.csv' in {DATA_DIR}"
-        )
-
-    if len(matches) > 1:
-        raise RuntimeError(
-            f"[ERROR] Multiple exact matches for '{index_name}': "
-            f"{[m.name for m in matches]}"
-        )
+    if len(matches) != 1:
+        raise RuntimeError(f"[ERROR] Index resolution failed for {index_name}")
 
     return matches[0]
 
@@ -83,18 +66,7 @@ def compute_trend_structure(index_df):
     trend["price_above_200"] = (price > dma200).astype(int)
     trend["dma200_slope_pct"] = dma200.pct_change(20) * 100
 
-    trend["trend_bias"] = np.where(
-        (trend["price_above_200"] == 1) & (trend["dma200_slope_pct"] > 0),
-        "uptrend",
-        np.where(
-            (trend["price_above_200"] == 0) & (trend["dma200_slope_pct"] < 0),
-            "downtrend",
-            "sideways",
-        ),
-    )
-
-    dist_200 = price / dma200 - 1
-    trend["dist_200_z"] = zscore(dist_200, 200)
+    trend["dist_200_z"] = zscore(price / dma200 - 1, 200)
     trend["persistence_200"] = (price > dma200).rolling(250).mean() * 100
 
     return trend
@@ -123,31 +95,10 @@ def compute_index_momentum(index_df):
 
     return mom
 
-# ================= DASHBOARD =================
-def plot_dashboard(df, name):
-    fig, axes = plt.subplots(3, 1, figsize=(14, 10), sharex=True)
-
-    axes[0].plot(df.index, df["ad_z_50"])
-    axes[0].set_title("Short-Term Breadth")
-
-    axes[1].plot(df.index, df["pct_above_200dma"])
-    axes[1].plot(df.index, df[f"{name}_mom_126"])
-    axes[1].set_title("Medium-Term Trend & Momentum")
-
-    axes[2].plot(df.index, df["nhnl_z"])
-    axes[2].plot(df.index, df[f"{name}_mom_12_1_z"])
-    axes[2].set_title("Long-Term Structural Momentum")
-
-    plt.tight_layout()
-    out = OUTPUT_DIR / f"{name}_dashboard.png"
-    plt.savefig(out)
-    plt.close()
-
-    print(f"[INFO] Dashboard saved → {out}")
-
 # ================= MAIN =================
 def main():
     prices = {}
+    stock_vols = {20: {}, 50: {}}
 
     # ---------- STOCK UNIVERSE ----------
     for f in DATA_DIR.iterdir():
@@ -156,7 +107,12 @@ def main():
         if "nifty" in f.name.lower():
             continue
 
-        prices[f.stem] = load_stock_by_path(f)["Close"]
+        df = load_stock_by_path(f)
+        prices[f.stem] = df["Close"]
+
+        ret = np.log(df["Close"] / df["Close"].shift(1))
+        for w in VOL_WINDOWS:
+            stock_vols[w][f.stem] = ret.rolling(w).std() * np.sqrt(252)
 
     price_df = pd.DataFrame(prices)
     universe = price_df.count(axis=1)
@@ -168,43 +124,37 @@ def main():
     breadth = pd.DataFrame({"ad": ad})
     breadth["ad_z_50"] = zscore(ad, 50)
 
+    # % above DMAs
     for w in DMA_WINDOWS:
-        breadth[f"pct_above_{w}dma"] = (
-            (price_df > price_df.rolling(w).mean()).mean(axis=1) * 100
-        )
+        pct = (price_df > price_df.rolling(w).mean()).mean(axis=1) * 100
+        breadth[f"pct_above_{w}dma"] = pct
+        breadth[f"pct_above_{w}dma_z"] = zscore(pct, 200)
+        breadth[f"pct_above_{w}dma_chg"] = pct.diff(20)
 
+    # NH–NL
     highs = price_df.rolling(NHNL_LOOKBACK).max()
     lows = price_df.rolling(NHNL_LOOKBACK).min()
-    breadth["nhnl_z"] = zscore(
-        (price_df >= highs).sum(axis=1) - (price_df <= lows).sum(axis=1),
-        NHNL_LOOKBACK,
-    )
+    nhnl = (price_df >= highs).sum(axis=1) - (price_df <= lows).sum(axis=1)
+    breadth["nhnl_z"] = zscore(nhnl, NHNL_LOOKBACK)
+
+    # ---------- VOLATILITY BREADTH ----------
+    for w in VOL_WINDOWS:
+        vol_df = pd.DataFrame(stock_vols[w])
+        median_vol = vol_df.median(axis=1)
+        breadth[f"median_stock_vol_{w}"] = median_vol
+        breadth[f"median_stock_vol_{w}_z"] = zscore(median_vol, 200)
 
     # ---------- INDEX LAYERS ----------
     for name, key in INDEX_KEYS.items():
-        idx_path = resolve_index_file(key)
-        print(f"[INFO] Using index file → {idx_path.name}")
+        idx = load_stock_by_path(resolve_index_file(key))
 
-        idx = load_stock_by_path(idx_path)
+        breadth = breadth.join(compute_trend_structure(idx).add_prefix(f"{name}_"))
+        breadth = breadth.join(compute_index_volatility(idx).add_prefix(f"{name}_"))
+        breadth = breadth.join(compute_index_momentum(idx).add_prefix(f"{name}_"))
 
-        breadth = breadth.join(
-            compute_trend_structure(idx).add_prefix(f"{name}_")
-        )
-        breadth = breadth.join(
-            compute_index_volatility(idx).add_prefix(f"{name}_")
-        )
-        breadth = breadth.join(
-            compute_index_momentum(idx).add_prefix(f"{name}_")
-        )
-
-        plot_dashboard(breadth.tail(LOOKBACK_DAILY), name)
-
-    # ---------- OUTPUT FILES ----------
+    # ---------- OUTPUT ----------
     today = breadth.index[-1]
-
-    daily_file = OUTPUT_DIR / f"breadth_{today.date()}.csv"
-    breadth.loc[[today]].to_csv(daily_file)
-
+    breadth.loc[[today]].to_csv(OUTPUT_DIR / f"breadth_{today.date()}.csv")
     breadth.tail(LOOKBACK_DAILY).to_csv(LOOKBACK_FILE)
 
     if FULL_HISTORY_FILE.exists():
@@ -215,13 +165,7 @@ def main():
     breadth.sort_index(inplace=True)
     breadth.to_csv(FULL_HISTORY_FILE)
 
-    # ---------- FINAL FILE LIST ----------
-    print("\n========== GENERATED OUTPUT FILES ==========")
-    for f in sorted(OUTPUT_DIR.glob("*")):
-        print(f" - {f.name}")
-    print("===========================================\n")
-
-    print("[SUCCESS] Pipeline completed successfully")
+    print("[SUCCESS] All required Trend + Breadth + Volatility variables generated")
 
 if __name__ == "__main__":
     main()
