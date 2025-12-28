@@ -11,9 +11,10 @@ OUTPUT_DIR = BASE_DIR / "output"
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 DMA_WINDOWS = [20, 50, 200]
+BREAKOUT_WINDOWS = [20, 63, 126, 252]   # 252 = NH / NL
 LOOKBACK_DAILY = 260
 
-OUTPUT_FILE = OUTPUT_DIR / "breadth_pct_full.csv"
+OUTPUT_FILE = OUTPUT_DIR / "breadth_pct_base_with_net_hl.csv"
 
 # ================= HELPERS =================
 def load_stock(path: Path):
@@ -52,7 +53,6 @@ def main():
     breadth["adv_pct"] = (adv / universe * 100).round(2)
     breadth["dec_pct"] = (dec / universe * 100).round(2)
     breadth["unch_pct"] = (unch / universe * 100).round(2)
-    breadth["net_ad_pct"] = ((adv - dec) / universe * 100).round(2)
 
     # ---------- DMA BREADTH (PERCENT) ----------
     for w in DMA_WINDOWS:
@@ -81,10 +81,26 @@ def main():
     for name, condition in buckets.items():
         breadth[name] = (condition.sum(axis=1) / universe * 100).round(2)
 
+    # ---------- BREAKOUT / BREAKDOWN + NET HL (PERCENT) ----------
+    for w in BREAKOUT_WINDOWS:
+        # Avoid look-ahead bias
+        rolling_high = price_df.shift(1).rolling(w).max()
+        rolling_low  = price_df.shift(1).rolling(w).min()
+
+        highs = (price_df > rolling_high).sum(axis=1)
+        lows  = (price_df < rolling_low).sum(axis=1)
+
+        high_pct = (highs / universe * 100)
+        low_pct  = (lows / universe * 100)
+
+        breadth[f"high_{w}d_pct"] = high_pct.round(2)
+        breadth[f"low_{w}d_pct"] = low_pct.round(2)
+        breadth[f"net_hl_{w}d_pct"] = ((highs - lows) / universe * 100).round(2)
+
     # ---------- OUTPUT ----------
     breadth.tail(LOOKBACK_DAILY).to_csv(OUTPUT_FILE)
 
-    print("[SUCCESS] Percentage-only breadth (AD + DMA + return buckets) generated")
+    print("[SUCCESS] Base breadth dataset generated (percent-only + net HLs)")
 
 if __name__ == "__main__":
     main()
