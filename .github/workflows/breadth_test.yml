@@ -48,7 +48,7 @@ jobs:
       # -----------------------------
       - name: Run market analytics
         run: |
-          python -u src/breadth.py
+          python -u src/analytics.py
 
       # -----------------------------
       # Checkout MarketAnalytics repo
