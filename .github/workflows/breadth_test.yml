@@ -21,7 +21,7 @@ jobs:
       - name: Checkout EOD2 repo
         uses: actions/checkout@v4
         with:
-          submodules: recursive   # 🔑 CRITICAL
+          submodules: recursive
           fetch-depth: 0
 
       # -----------------------------
@@ -37,14 +37,14 @@ jobs:
           pip install -r requirements.txt
 
       # -----------------------------
-      # UPDATE EOD DATA (CRITICAL)
+      # Update NSE EOD data
       # -----------------------------
       - name: Update NSE EOD data
         run: |
           python -u src/init.py || echo "[INFO] NSE EOD not available yet, continuing"
 
       # -----------------------------
-      # Run analytics pipeline
+      # Run analytics (produces breadth_base.csv)
       # -----------------------------
       - name: Run market analytics
         run: |
@@ -61,33 +61,23 @@ jobs:
           token: ${{ secrets.MARKET_ANALYTICS_PAT }}
 
       # -----------------------------
-      # Copy outputs (CSV + dashboard)
+      # Copy single canonical CSV
       # -----------------------------
-      - name: Copy analytics outputs
+      - name: Copy analytics output
         run: |
           set -e
-
-          mkdir -p MarketAnalytics/data/daily
-          mkdir -p MarketAnalytics/data/lookback
           mkdir -p MarketAnalytics/data/history
 
-          # ---- DAILY CSV ----
-          DAILY_FILE=$(ls -t src/output/breadth_????-??-??.csv 2>/dev/null | head -1)
-          if [ -n "$DAILY_FILE" ]; then
-            cp "$DAILY_FILE" MarketAnalytics/data/daily/
+          if [ -f src/output/breadth_base.csv ]; then
+            cp src/output/breadth_base.csv \
+               MarketAnalytics/data/history/breadth_base.csv
+          else
+            echo "[ERROR] breadth_base.csv not found"
+            exit 1
           fi
 
-          # ---- LOOKBACK ----
-          if [ -f src/output/breadth_lookback_260.csv ]; then
-            cp src/output/breadth_lookback_260.csv MarketAnalytics/data/lookback/
-          fi
-
-          # ---- FULL HISTORY (monthly) ----
-          if [ -f src/output/breadth_full_history.csv ]; then
-            cp src/output/breadth_full_history.csv MarketAnalytics/data/history
-          fi
       # -----------------------------
-      # Commit & push to MarketAnalytics
+      # Commit & push
       # -----------------------------
       - name: Commit & push MarketAnalytics updates
         env:
@@ -101,8 +91,8 @@ jobs:
           git remote set-url origin https://x-access-token:${PAT}@github.com/achyuthunipradyumna-sudo/MarketAnalytics.git
 
           if [[ -n "$(git status --porcelain)" ]]; then
-            git add .
-            git commit -m "Automated market analytics update"
+            git add data/history/breadth_base.csv
+            git commit -m "Automated breadth base update"
             git push origin main
           else
             echo "[INFO] No changes to commit"
