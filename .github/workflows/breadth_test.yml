@@ -67,6 +67,9 @@ jobs:
         run: |
           set -e
           mkdir -p MarketAnalytics/data/history
+          rm -rf MarketAnalytics/trend.html
+          rm -rf MarketAnalytics/dashboard.html
+          rm -rf MarketAnalytics/volatility.html
 
           if [ -f src/output/breadth_base.csv ]; then
             cp src/output/breadth_base.csv \
